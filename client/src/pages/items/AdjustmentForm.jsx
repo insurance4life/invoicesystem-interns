@@ -4,6 +4,7 @@ import { useApp, useFetch } from '../../store.jsx';
 import { api } from '../../api.js';
 import { PageHeader, Button, Field, Input, Textarea, NumberInput, Select, AccountSelect, Combo, Empty } from '../../components/ui.jsx';
 import { today, fmtNum } from '../../lib/format.js';
+import { X } from 'lucide-react';
 
 const REASONS = ['Stolen goods', 'Damaged goods', 'Stocktaking results', 'Inventory revaluation', 'Other'];
 const EXPENSE_TYPES = ['expense', 'cost_of_goods_sold', 'other_expense'];
@@ -196,7 +197,7 @@ export default function AdjustmentForm() {
                   <td className={`r ${c.change < 0 ? 'neg' : ''}`}>
                     {c.change == null ? '—' : `${c.change > 0 ? '+' : ''}${qtyMode ? fmtNum(c.change, 2) : money(c.change)}`}
                   </td>
-                  <td><Button size="sm" variant="link" onClick={() => removeLine(l.key)} aria-label="Remove line">✕</Button></td>
+                  <td><Button size="sm" variant="link" onClick={() => removeLine(l.key)} aria-label="Remove line"><X size={18} strokeWidth={1.5} /></Button></td>
                 </tr>
               );
             })}

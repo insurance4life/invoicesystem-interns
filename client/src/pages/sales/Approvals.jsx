@@ -1,5 +1,6 @@
 // Transaction approval queue: every document waiting for approval, across types.
 import { useEffect, useState } from 'react';
+import { CircleCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../../store.jsx';
 import { api } from '../../api.js';
@@ -29,7 +30,7 @@ export default function Approvals() {
   return (
     <div className="page">
       <PageHeader title="Pending Approvals" subtitle={enabled.length ? `Approval is required for: ${enabled.map((t) => DOC_UI[t].plural).join(', ')}` : 'Transaction approval is off. Turn it on in Settings → Approvals.'} />
-      {rows && !rows.length ? <Empty icon="✅" title="All caught up" text="No documents are waiting for approval." /> : (
+      {rows && !rows.length ? <Empty icon={CircleCheck} title="All caught up" text="No documents are waiting for approval." /> : (
         <Table loading={!rows} rows={rows || []} rowKey="id" onRowClick={(r) => nav(docUrl(r.doc_type, r.id))} columns={[
           { key: 'date', label: 'Date', render: (r) => date(r.date) },
           { key: 'type', label: 'Type', render: (r) => DOC_UI[r.doc_type].label },

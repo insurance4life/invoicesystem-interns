@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Landmark } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp, useFetch } from '../../store.jsx';
 import { api } from '../../api.js';
@@ -71,7 +72,7 @@ export default function Overview() {
         </div>
       </div>
       {!accounts.length
-        ? <Empty icon="🏦" title="Connect your bank accounts" text="Add a bank or credit card account to import statements and reconcile." action={<Button variant="primary" onClick={() => setModal({ account: {} })}>Add Bank or Credit Card</Button>} />
+        ? <Empty icon={Landmark} title="Connect your bank accounts" text="Add a bank or credit card account to import statements and reconcile." action={<Button variant="primary" onClick={() => setModal({ account: {} })}>Add Bank or Credit Card</Button>} />
         : view === 'table'
           ? <Table columns={cols} rows={accounts} onRowClick={(a) => nav(`/banking/accounts/${a.id}`)} />
           : (

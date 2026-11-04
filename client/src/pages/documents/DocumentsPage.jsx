@@ -3,6 +3,7 @@ import { api } from '../../api.js';
 import { useApp, useFetch } from '../../store.jsx';
 import { Button, Badge, Combo, Field, Input, Menu, Modal, PageHeader, Select, Table, Tabs, errorMessage } from '../../components/ui.jsx';
 import { downloadFile, fetchFileBlob, fmtSize, uploadFiles } from '../../components/Attachments.jsx';
+import { Image, FileText } from 'lucide-react';
 
 const FOLDERS = [
   ['all', 'All files'], ['inbox', 'Inbox'], ['receipts', 'Receipts'], ['bills', 'Bills'], ['contracts', 'Contracts'], ['others', 'Others'],
@@ -13,7 +14,7 @@ const ENTITY_LABEL = Object.fromEntries(ENTITY);
 
 const isImage = (m) => /^image\/(png|jpe?g|gif|webp)$/.test(m || '');
 const isPdf = (m) => m === 'application/pdf';
-const icon = (m) => (isImage(m) ? '🖼' : isPdf(m) ? '📕' : m?.startsWith('text/') ? '📝' : '📄');
+const icon = (m, size = 16) => (isImage(m) ? <Image size={size} strokeWidth={1.5} /> : <FileText size={size} strokeWidth={1.5} />);
 
 export default function DocumentsPage() {
   const { can, toast, date } = useApp();
@@ -122,7 +123,7 @@ export default function DocumentsPage() {
             {rows.map((f) => (
               <div key={f.id} className="card" style={{ overflow: 'hidden' }}>
                 <button type="button" onClick={() => setPreview(f)} style={{ display: 'block', width: '100%', height: 120, border: 0, background: 'var(--line2)', cursor: 'pointer', padding: 0 }}>
-                  {isImage(f.mime) ? <Thumb file={f} /> : <span style={{ fontSize: 40 }}>{icon(f.mime)}</span>}
+                  {isImage(f.mime) ? <Thumb file={f} /> : <span>{icon(f.mime, 40)}</span>}
                 </button>
                 <div style={{ padding: '8px 10px' }}>
                   <div className="bold" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.name}>{f.name}</div>

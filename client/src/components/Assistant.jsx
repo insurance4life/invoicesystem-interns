@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { Button } from './ui.jsx';
+import { MessageSquare, X } from 'lucide-react';
 
 export default function Assistant() {
   const [open, setOpen] = useState(false);
@@ -23,10 +24,10 @@ export default function Assistant() {
     try { const r = await api.post('/assistant', { q: t }); setMsgs((m) => [...m, r]); } catch (e) { setMsgs((m) => [...m, { text: e.message }]); }
     setBusy(false);
   };
-  if (!open) return <button className="ask-fab" onClick={() => setOpen(true)} title="Ask OpenBooks">✨ Ask</button>;
+  if (!open) return <button className="ask-fab" onClick={() => setOpen(true)} title="Ask OpenBooks"><><MessageSquare size={16} strokeWidth={1.5} />Ask</></button>;
   return (
     <div className="ask-panel">
-      <div className="ask-head"><b>✨ Ask OpenBooks</b><button className="icon-btn" onClick={() => setOpen(false)}>×</button></div>
+      <div className="ask-head"><b><><MessageSquare size={16} strokeWidth={1.5} />Ask OpenBooks</></b><button className="icon-btn" onClick={() => setOpen(false)}><X size={18} strokeWidth={1.5} /></button></div>
       <div className="ask-body">
         {!msgs.length && <div className="muted small">Ask about your books in plain English.</div>}
         {!msgs.length && <div className="ask-sugg">{sugg.map((s) => <button key={s} onClick={() => ask(s)}>{s}</button>)}</div>}

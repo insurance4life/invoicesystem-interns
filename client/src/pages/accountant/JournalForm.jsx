@@ -114,7 +114,7 @@ export default function JournalForm({ profile = false }) {
     <div className="page">
       <PageHeader title={title} subtitle={profile ? 'Post the same journal automatically on a schedule.' : 'Debits and credits must balance.'}
         actions={!id && !profile && templates.length > 0 && (
-          <Select style={{ width: 220 }} placeholder="Use a template…" value="" options={templates.map((t) => [t.id, t.reference || t.notes || `Template ${t.id}`])} onChange={(e) => applyTemplate(e.target.value)} />
+          <Select style={{ width: 220 }} placeholder="Use a template" value="" options={templates.map((t) => [t.id, t.reference || t.notes || `Template ${t.id}`])} onChange={(e) => applyTemplate(e.target.value)} />
         )} />
       <div className="form-section">
         <div className="grid3">

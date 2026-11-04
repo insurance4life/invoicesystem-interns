@@ -8,6 +8,7 @@ import ActivityPanel from '../../components/ActivityPanel.jsx';
 import Attachments from '../../components/Attachments.jsx';
 import { DOC_UI, docUrl } from '../../lib/docs.js';
 import { EmailModal, PaymentModal, ApplyCreditsModal, ApplyToDocsModal, RefundModal, ConvertVendorModal, ReasonModal, WriteOffModal } from './DocModals.jsx';
+import { Pencil, Mail, Printer, X, Hourglass } from 'lucide-react';
 
 function SideList({ type, activeId, refreshKey }) {
   const { money } = useApp();
@@ -121,19 +122,19 @@ export default function DocView({ type }) {
           <div className="page-head-row">
             <div className="page-title"><h1>{d.number}</h1><Badge status={st} /></div>
             <div className="page-actions">
-              {d.status !== 'void' && can(module, 'edit') && <Button onClick={() => nav(docUrl(type, d.id, '/edit'))}>✎ Edit</Button>}
-              {ui.contact === 'customer' && !ui.profile && <Button onClick={() => setModal('email')}>✉ Send</Button>}
-              {type === 'purchaseorder' && <Button onClick={() => setModal('email')}>✉ Send</Button>}
-              {!ui.profile && <Button onClick={() => window.open(`/print/${type}/${d.id}`, '_blank')}>🖨 PDF / Print</Button>}
+              {d.status !== 'void' && can(module, 'edit') && <Button onClick={() => nav(docUrl(type, d.id, '/edit'))}><><Pencil size={16} strokeWidth={1.5} />Edit</></Button>}
+              {ui.contact === 'customer' && !ui.profile && <Button onClick={() => setModal('email')}><><Mail size={16} strokeWidth={1.5} />Send</></Button>}
+              {type === 'purchaseorder' && <Button onClick={() => setModal('email')}><><Mail size={16} strokeWidth={1.5} />Send</></Button>}
+              {!ui.profile && <Button onClick={() => window.open(`/print/${type}/${d.id}`, '_blank')}><><Printer size={16} strokeWidth={1.5} />PDF / Print</></Button>}
               {primary}
               {convertItems.length > 0 && <Menu label="Convert" items={convertItems} />}
               <Menu label="More" items={more} />
-              <Button variant="link" onClick={() => nav(docUrl(type))}>✕</Button>
+              <Button variant="link" onClick={() => nav(docUrl(type))}><X size={18} strokeWidth={1.5} /></Button>
             </div>
           </div>
         </div>
 
-        {pending && <div className="callout warn"><span>⏳ This {ui.label.toLowerCase()} is waiting for approval.</span></div>}
+        {pending && <div className="callout warn"><span><Hourglass size={16} strokeWidth={1.5} /> This {ui.label.toLowerCase()} is waiting for approval.</span></div>}
         {isDraft && type === 'invoice' && <div className="callout"><span><b>WHAT'S NEXT?</b> Send this invoice to your customer or mark it as sent so it's recorded in your books.</span><span className="row"><Button size="sm" variant="primary" onClick={() => setModal('email')}>Send Invoice</Button><Button size="sm" onClick={() => act('mark_sent', {}, 'Invoice marked as sent')}>Mark as Sent</Button></span></div>}
         {payable && type === 'invoice' && d.status === 'open' && <div className="callout"><span>Balance due <b>{money(d.balance, d.currency)}</b>{d.due_date ? ` · due ${date(d.due_date)}` : ''}. Customers can pay online through the share link.</span><span className="row"><Button size="sm" variant="primary" onClick={() => setModal('pay')}>Record Payment</Button></span></div>}
         {d.source_doc && <div className="muted small mb">Created from <Link to={docUrl(d.source_doc.doc_type, d.source_doc.id)}>{DOC_UI[d.source_doc.doc_type]?.label} {d.source_doc.number}</Link></div>}

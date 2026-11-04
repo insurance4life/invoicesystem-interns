@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../../api.js';
 import { useApp } from '../../store.jsx';
 import { Button, Field, Input } from '../../components/ui.jsx';
+import { BookOpen } from 'lucide-react';
 
 export default function Login() {
   const { login } = useApp();
@@ -23,7 +24,7 @@ export default function Login() {
   return (
     <div className="auth">
       <form className="auth-card" onSubmit={submit}>
-        <div className="brand" style={{ background: 'none', color: 'var(--fg)', padding: 0, marginBottom: 12 }}><span className="brand-logo">📘</span>OpenBooks</div>
+        <div className="brand" style={{ background: 'none', color: 'var(--fg)', padding: 0, marginBottom: 12 }}><span className="brand-logo"><BookOpen size={16} strokeWidth={1.5} /></span>OpenBooks</div>
         <h1>Sign in</h1>
         <div className="muted">to access your books</div>
         <div className="stack">

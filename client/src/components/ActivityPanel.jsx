@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api } from '../api.js';
 import { useApp, useFetch } from '../store.jsx';
 import { Button, Textarea } from './ui.jsx';
+import { MessageSquare } from 'lucide-react';
 
 export default function ActivityPanel({ entityType, entityId, refreshKey }) {
   const { toast } = useApp();
@@ -28,7 +29,7 @@ export default function ActivityPanel({ entityType, entityId, refreshKey }) {
             <div className="tl-dot" />
             <div>
               <div className="small muted">{new Date(`${i.at.replace(' ', 'T')}Z`).toLocaleString()} · {i.who}</div>
-              <div>{i.comment ? '💬 ' : ''}{i.text}</div>
+              <div>{i.comment ? <><MessageSquare size={16} strokeWidth={1.5} /> </> : null}{i.text}</div>
             </div>
           </div>
         ))}

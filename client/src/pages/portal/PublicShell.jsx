@@ -1,4 +1,6 @@
 // Page chrome for the public (no-login) pages.
+import { Lock } from 'lucide-react';
+
 export function Shell({ children }) {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', padding: '20px 16px 48px' }}>
@@ -12,7 +14,7 @@ export function Notice({ title, text, children }) {
   return (
     <Shell>
       <div className="empty" style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
-        <div className="empty-icon">🔒</div>
+        <div className="empty-icon"><Lock size={16} strokeWidth={1.5} /></div>
         <h3>{title}</h3>
         {text && <p className="muted">{text}</p>}
         {children}

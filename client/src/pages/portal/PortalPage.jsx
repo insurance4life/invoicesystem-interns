@@ -120,7 +120,7 @@ export default function PortalPage() {
             </div>
           </div>
           <Section title="Open invoices">
-            <DocTable rows={open} columns={docColumns([{ key: 'balance', label: 'Balance', align: 'r', render: (d) => m(d.balance) }])} empty="Nothing is outstanding. Thank you!" />
+            <DocTable rows={open} columns={docColumns([{ key: 'balance', label: 'Balance', align: 'r', render: (d) => m(d.balance) }])} empty="Nothing is outstanding. Thank you" />
           </Section>
           {(creditnotes.length > 0 || retainers.length > 0) && (
             <Section title="Credit notes & retainers">

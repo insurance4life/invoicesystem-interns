@@ -7,6 +7,7 @@ import ActivityPanel from '../../components/ActivityPanel.jsx';
 import Attachments from '../../components/Attachments.jsx';
 import { docUrl } from '../../lib/docs.js';
 import { ApplyToDocsModal, RefundModal } from './DocModals.jsx';
+import { Pencil, Printer, X } from 'lucide-react';
 
 export default function PaymentView({ kind }) {
   const { id } = useParams();
@@ -25,14 +26,14 @@ export default function PaymentView({ kind }) {
   return (
     <div className="page">
       <PageHeader title={p.number} subtitle={`${kind === 'received' ? 'Payment received from' : 'Payment made to'} ${p.contact_name}`} actions={<>
-        {can(module, 'edit') && <Button onClick={() => nav(`/payments-${kind}/${p.id}/edit`)}>✎ Edit</Button>}
+        {can(module, 'edit') && <Button onClick={() => nav(`/payments-${kind}/${p.id}/edit`)}><><Pencil size={16} strokeWidth={1.5} />Edit</></Button>}
         {p.unused > 0 && <Button variant="primary" onClick={() => setModal('apply')}>Apply Excess to {kind === 'received' ? 'Invoices' : 'Bills'}</Button>}
-        <Button onClick={() => window.print()}>🖨 Print</Button>
+        <Button onClick={() => window.print()}><><Printer size={16} strokeWidth={1.5} />Print</></Button>
         <Menu label="More" items={[
           { label: 'Refund excess amount', onClick: () => setModal('refund'), hidden: !(p.unused > 0) },
           { label: 'Delete', danger: true, onClick: remove, hidden: !can(module, 'delete') },
         ]} />
-        <Button variant="link" onClick={() => nav(`/payments-${kind}`)}>✕</Button>
+        <Button variant="link" onClick={() => nav(`/payments-${kind}`)}><X size={18} strokeWidth={1.5} /></Button>
       </>} />
       <Tabs active={tab} onChange={setTab} tabs={[{ key: 'receipt', label: kind === 'received' ? 'Payment Receipt' : 'Payment Advice' }, { key: 'activity', label: 'Comments & History' }, { key: 'files', label: 'Attachments' }]} />
       {tab === 'receipt' && (

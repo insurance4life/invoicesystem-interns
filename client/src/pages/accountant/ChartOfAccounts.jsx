@@ -5,6 +5,7 @@ import { api } from '../../api.js';
 import { PageHeader, Button, Modal, Field, Input, Textarea, Select, Menu, Empty, AccountSelect, Tabs, Money, Spinner } from '../../components/ui.jsx';
 import { ACCOUNT_TYPE_LABELS } from '@shared/calc.js';
 import { CLASS_LABELS, classOf, typeOptions, errText } from './common.js';
+import { Star, MoreHorizontal } from 'lucide-react';
 
 const BANK_TYPES = ['bank', 'credit_card'];
 
@@ -124,8 +125,8 @@ export default function ChartOfAccounts() {
                     <td>
                       <div className="row" style={{ flexWrap: 'nowrap' }}>
                         <button className="icon-btn" title={a.watchlist ? 'Remove from watchlist' : 'Add to watchlist'} onClick={() => toggleWatch(a)}
-                          style={{ color: a.watchlist ? 'var(--orange)' : undefined }}>{a.watchlist ? '★' : '☆'}</button>
-                        <Menu label="⋯" items={[
+                          style={{ color: a.watchlist ? 'var(--orange)' : undefined }}>{a.watchlist ? <Star size={18} strokeWidth={1.5} fill="currentColor" /> : <Star size={18} strokeWidth={1.5} />}</button>
+                        <Menu label={<MoreHorizontal size={18} strokeWidth={1.5} />} items={[
                           { label: 'Edit', hidden: !can('accountant', 'edit'), onClick: () => setEditing(a) },
                           { label: 'Mark as Inactive', hidden: !can('accountant', 'edit') || !a.is_active || a.is_system, onClick: () => setActive(a, false) },
                           { label: 'Mark as Active', hidden: !can('accountant', 'edit') || a.is_active, onClick: () => setActive(a, true) },

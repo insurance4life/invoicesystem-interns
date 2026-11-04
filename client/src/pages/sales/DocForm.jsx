@@ -6,6 +6,7 @@ import { PageHeader, Button, Field, Input, Textarea, NumberInput, Select, Combo,
 import { DOC_UI, docUrl } from '../../lib/docs.js';
 import { today, PAYMENT_MODES } from '../../lib/format.js';
 import { computeDocument, dueDateFor, INDIAN_STATES, round2 } from '@shared/calc.js';
+import { X, Lightbulb } from 'lucide-react';
 
 let keySeq = 1;
 const blankLine = () => ({ key: keySeq++, item_id: '', name: '', description: '', quantity: 1, rate: '', discount: '', tax_id: '', account_id: '', hsn_sac: '', unit: '' });
@@ -176,7 +177,7 @@ export default function DocForm({ type }) {
 
   return (
     <div className="page">
-      <PageHeader title={`${id ? 'Edit' : 'New'} ${ui.label}`} actions={<Button variant="link" onClick={() => nav(-1)}>✕</Button>} />
+      <PageHeader title={`${id ? 'Edit' : 'New'} ${ui.label}`} actions={<Button variant="link" onClick={() => nav(-1)}><X size={18} strokeWidth={1.5} /></Button>} />
       <div className="form-section">
         <div className="form-grid">
           <Field inline label={`${ui.contact === 'vendor' ? 'Vendor' : 'Customer'} Name`} required={type !== 'deliverychallan'} error={errors.contact}>
@@ -256,7 +257,7 @@ export default function DocForm({ type }) {
 
       {unbilled.length > 0 && (
         <div className="callout">
-          <span>💡 {contact?.display_name} has {unbilled.length} unbilled expense(s).</span>
+          <span><Lightbulb size={16} strokeWidth={1.5} /> {contact?.display_name} has {unbilled.length} unbilled expense(s).</span>
           <div className="row">{unbilled.slice(0, 5).map((e) => <Button key={e.id} size="sm" onClick={() => addUnbilled(e)}>+ {e.account_name} {money(e.total)}</Button>)}</div>
         </div>
       )}
@@ -298,7 +299,7 @@ export default function DocForm({ type }) {
                   {showLineDiscount && <td><NumberInput value={l.discount} onChange={(v) => setLine(l.key, { discount: v })} /></td>}
                   <td><TaxSelect value={l.tax_id} onChange={(v) => setLine(l.key, { tax_id: v })} placeholder="Select a Tax" /></td>
                   <td className="r bold" style={{ paddingTop: 12 }}>{(calc?.lines[i]?.amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-                  <td><button className="icon-btn rm" title="Remove" onClick={() => setLines((ls) => (ls.length > 1 ? ls.filter((x) => x.key !== l.key) : [blankLine()]))}>×</button></td>
+                  <td><button className="icon-btn rm" title="Remove" onClick={() => setLines((ls) => (ls.length > 1 ? ls.filter((x) => x.key !== l.key) : [blankLine()]))}><X size={18} strokeWidth={1.5} /></button></td>
                 </tr>
               ))}
             </tbody>

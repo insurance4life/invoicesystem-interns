@@ -3,33 +3,34 @@ import { NavLink, useLocation, useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../store.jsx';
 import { api } from '../api.js';
 import { Menu, Modal, Button, Field, Input, Select } from './ui.jsx';
+import { House, Package, Landmark, ShoppingCart, Receipt, Timer, NotebookPen, ChartColumn, FolderOpen, CircleCheck, ChevronRight, Settings, Menu as MenuIcon, Plus, BookOpen } from 'lucide-react';
 import { INDIAN_STATES } from '@shared/calc.js';
 import Assistant from './Assistant.jsx';
 
 export const NAV = [
-  { label: 'Home', icon: '🏠', to: '/', end: true },
-  { label: 'Items', icon: '📦', module: 'items', children: [
+  { label: 'Home', icon: House, to: '/', end: true },
+  { label: 'Items', icon: Package, module: 'items', children: [
     { label: 'Items', to: '/items' }, { label: 'Inventory Adjustments', to: '/inventory/adjustments' }, { label: 'Price Lists', to: '/inventory/price-lists' }] },
-  { label: 'Banking', icon: '🏦', module: 'banking', to: '/banking' },
-  { label: 'Sales', icon: '🛒', module: 'sales', children: [
+  { label: 'Banking', icon: Landmark, module: 'banking', to: '/banking' },
+  { label: 'Sales', icon: ShoppingCart, module: 'sales', children: [
     { label: 'Customers', to: '/customers', module: 'contacts' }, { label: 'Quotes', to: '/quotes' }, { label: 'Sales Orders', to: '/salesorders' },
     { label: 'Delivery Challans', to: '/deliverychallans' }, { label: 'Invoices', to: '/invoices' }, { label: 'Retainer Invoices', to: '/retainerinvoices' },
     { label: 'Sales Receipts', to: '/salesreceipts' }, { label: 'Recurring Invoices', to: '/recurringinvoices' },
     { label: 'Payments Received', to: '/payments-received' }, { label: 'Credit Notes', to: '/creditnotes' }] },
-  { label: 'Purchases', icon: '🧾', module: 'purchases', children: [
+  { label: 'Purchases', icon: Receipt, module: 'purchases', children: [
     { label: 'Vendors', to: '/vendors', module: 'contacts' }, { label: 'Expenses', to: '/expenses' }, { label: 'Recurring Expenses', to: '/recurring-expenses' },
     { label: 'Purchase Orders', to: '/purchaseorders' }, { label: 'Bills', to: '/bills' }, { label: 'Recurring Bills', to: '/recurringbills' },
     { label: 'Payments Made', to: '/payments-made' }, { label: 'Vendor Credits', to: '/vendorcredits' }] },
-  { label: 'Time Tracking', icon: '⏱', module: 'projects', children: [
+  { label: 'Time Tracking', icon: Timer, module: 'projects', children: [
     { label: 'Projects', to: '/time/projects' }, { label: 'Timesheet', to: '/time/timesheet' }] },
-  { label: 'Accountant', icon: '📒', module: 'accountant', children: [
+  { label: 'Accountant', icon: NotebookPen, module: 'accountant', children: [
     { label: 'Manual Journals', to: '/accountant/journals' }, { label: 'Recurring Journals', to: '/accountant/recurring-journals' },
     { label: 'Chart of Accounts', to: '/accountant/chart-of-accounts' }, { label: 'Budgets', to: '/accountant/budgets' },
     { label: 'Fixed Assets', to: '/accountant/fixed-assets' }, { label: 'Transaction Locking', to: '/accountant/transaction-locking' },
     { label: 'Currency Adjustments', to: '/accountant/currency-adjustments' }] },
-  { label: 'Reports', icon: '📊', module: 'reports', to: '/reports' },
-  { label: 'Documents', icon: '🗂', module: 'documents', to: '/documents' },
-  { label: 'Approvals', icon: '✅', to: '/approvals' },
+  { label: 'Reports', icon: ChartColumn, module: 'reports', to: '/reports' },
+  { label: 'Documents', icon: FolderOpen, module: 'documents', to: '/documents' },
+  { label: 'Approvals', icon: CircleCheck, to: '/approvals' },
 ];
 
 function NavGroup({ g, can, pathname }) {
@@ -41,7 +42,8 @@ function NavGroup({ g, can, pathname }) {
   return (
     <div>
       <button className="nav-group-btn" onClick={() => setOpen((o) => !o)}>
-        <span className="nav-icon">{g.icon}</span>{g.label}<span className="nav-caret">{open ? '▲' : '▼'}</span>
+        <span className="nav-icon"><g.icon size={16} strokeWidth={1.5} /></span>{g.label}
+        <span className={`nav-caret ${open ? 'open' : ''}`}><ChevronRight size={14} strokeWidth={1.5} /></span>
       </button>
       {open && <div className="nav-sub">{kids.map((c) => <NavLink key={c.to} to={c.to} className="nav-item">{c.label}</NavLink>)}</div>}
     </div>
@@ -65,7 +67,8 @@ function GlobalSearch() {
   }, []);
   return (
     <div className="search-wrap">
-      <input ref={ref} className="input" placeholder="Search customers, items, invoices… ( / )" value={q} onChange={(e) => setQ(e.target.value)} onBlur={() => setTimeout(() => setRes(null), 200)} />
+      {!q && <span className="kbd search-kbd" aria-hidden="true">/</span>}
+      <input ref={ref} className="input" placeholder="Search" aria-label="Search customers, items and documents" value={q} onChange={(e) => setQ(e.target.value)} onBlur={() => setTimeout(() => setRes(null), 200)} />
       {res && (
         <div className="search-results">
           {!res.length && <div className="pad muted">No results</div>}
@@ -144,18 +147,18 @@ export default function Layout({ children }) {
   return (
     <div className="app">
       <aside className={`sidebar ${mobile ? 'mobile-open' : ''}`}>
-        <div className="brand"><span className="brand-logo">📘</span>OpenBooks</div>
+        <div className="brand"><span className="brand-logo"><BookOpen size={14} strokeWidth={2} /></span>OpenBooks</div>
         <nav className="nav">
           {NAV.map((g) => (g.children
             ? <NavGroup key={g.label} g={g} can={can} pathname={pathname} />
-            : (!g.module || can(g.module)) && <NavLink key={g.to} to={g.to} end={g.end} className="nav-item"><span className="nav-icon">{g.icon}</span>{g.label}</NavLink>))}
+            : (!g.module || can(g.module)) && <NavLink key={g.to} to={g.to} end={g.end} className="nav-item"><span className="nav-icon"><g.icon size={16} strokeWidth={1.5} /></span>{g.label}</NavLink>))}
         </nav>
       </aside>
       <div className="main">
         <header className="topbar">
-          <button className="icon-btn mobile-only" onClick={() => setMobile((m) => !m)} aria-label="Menu">☰</button>
+          <button className="icon-btn mobile-only" onClick={() => setMobile((m) => !m)} aria-label="Menu"><MenuIcon size={18} strokeWidth={1.5} /></button>
           <GlobalSearch />
-          <Menu label="＋ New" variant="primary" align="left" items={QUICK.filter(([, , m]) => can(m, 'create')).map(([l, to]) => ({ label: l, onClick: () => nav(to) }))} />
+          <Menu label={<><Plus size={16} strokeWidth={1.75} />New</>} variant="primary" align="left" items={QUICK.filter(([, , m]) => can(m, 'create')).map(([l, to]) => ({ label: l, onClick: () => nav(to) }))} />
           <div className="org-switch">
             <Menu label={org?.name || 'Organization'} items={[
               ...orgs.map((o) => ({ label: `${String(o.id) === String(org?.id) ? '✓ ' : ''}${o.name}`, onClick: () => switchOrg(o.id) })),
@@ -167,7 +170,7 @@ export default function Layout({ children }) {
               { divider: true },
               { label: '+ New Organization', onClick: () => setNewOrg(true) },
             ]} />
-            {can('settings') && <Link to="/settings" className="icon-btn" title="Settings">⚙</Link>}
+            {can('settings') && <Link to="/settings" className="icon-btn" title="Settings" aria-label="Settings"><Settings size={18} strokeWidth={1.5} /></Link>}
             <Menu label={<span className="avatar">{user?.name?.[0]?.toUpperCase()}</span>} variant="link" items={[
               { label: user?.email, onClick: () => nav('/profile') },
               { label: 'My Profile', onClick: () => nav('/profile') },

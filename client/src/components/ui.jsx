@@ -1,5 +1,6 @@
 // Shared UI kit. Every page should build from these so the app looks consistent.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, FileText } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useApp } from '../store.jsx';
 import { statusLabel } from '../lib/format.js';
@@ -139,10 +140,10 @@ export function Card({ title, actions, children, className = '', pad = true }) {
   );
 }
 
-export function Empty({ title, text, action, icon = '📄' }) {
+export function Empty({ title, text, action, icon: Icon = FileText }) {
   return (
     <div className="empty">
-      <div className="empty-icon">{icon}</div>
+      <div className="empty-icon"><Icon size={32} strokeWidth={1.25} /></div>
       <h3>{title}</h3>
       {text && <p className="muted">{text}</p>}
       {action}
@@ -170,7 +171,7 @@ export function Menu({ label = '⋯', items, variant = 'secondary', align = 'rig
   if (!visible.length) return null;
   return (
     <div className="menu" ref={ref}>
-      <Button variant={variant} onClick={() => setOpen((o) => !o)}>{label} ▾</Button>
+      <Button variant={variant} onClick={() => setOpen((o) => !o)}>{label}<ChevronDown size={14} strokeWidth={1.75} className="ic-caret" /></Button>
       {open && (
         <div className={`menu-list menu-${align}`}>
           {visible.map((i, k) => (i.divider ? <div key={k} className="menu-div" /> : (
