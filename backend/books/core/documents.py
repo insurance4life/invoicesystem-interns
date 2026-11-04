@@ -217,6 +217,10 @@ def save_document(req, type_, body, id=None):  # noqa: A002
 
         currency = body.get('currency') or (contact or {}).get('currency') or org.get('currency')
         rate = jsnum(body.get('exchange_rate')) or None
+        if rate is not None and not rate > 0:
+            raise bad('Exchange rate must be greater than zero')
+        if not rate and existing and currency == existing.get('currency') and jsnum(existing.get('exchange_rate')) > 0:
+            rate = jsnum(existing.get('exchange_rate'))  # an edit that does not send a rate keeps the posted one
         if not rate:
             rate = 1 if currency == org.get('currency') else ((get('SELECT exchange_rate FROM currencies WHERE org_id = ? AND code = ?', org['id'], currency) or {}).get('exchange_rate') or 1)
 
@@ -247,6 +251,10 @@ def save_document(req, type_, body, id=None):  # noqa: A002
             fields['account_id'] = sys_account(org['id'], 'undeposited_funds')
 
         doc_id = id
+        if existing and (fields['currency'] != existing.get('currency') or round(jsnum(fields['exchange_rate']), 6) != round(jsnum(existing.get('exchange_rate') or 1), 6)) \
+                and _has_applications(org['id'], existing):
+            # Payments and credits were posted at the old rate; changing it would leave the control account unbalanced.
+            raise bad('Remove the payments and credits applied to this document before changing its currency or exchange rate')
         if existing:
             if body.get('number') and body['number'] != existing['number']:
                 fields['number'] = body['number']
@@ -309,11 +317,22 @@ def _credit_limit_warning(org, doc, contact):
     return []
 
 
+# An entry is linked only while unbilled and only to an invoice of its own customer (or one with no customer).
+_UNBILLED_EXPENSE = ("invoice_id IS NULL AND (customer_id IS NULL OR customer_id = (SELECT contact_id FROM documents WHERE id = ?))")
+_UNBILLED_TIME = ("invoice_id IS NULL AND project_id IN (SELECT p.id FROM projects p WHERE p.org_id = ? AND "
+                  "(p.customer_id IS NULL OR p.customer_id = (SELECT contact_id FROM documents WHERE id = ?)))")
+
+
+def _link_time(org_id, doc_id, tid):
+    run(f'UPDATE time_entries SET invoice_id = ? WHERE id = ? AND org_id = ? AND {_UNBILLED_TIME}', doc_id, tid, org_id, org_id, doc_id)
+
+
 def _link_billables(org_id, doc_id, lines):
     run("UPDATE expenses SET invoice_id = NULL, status = 'unbilled' WHERE invoice_id = ? AND org_id = ?", doc_id, org_id)
     for l in lines:
         if l.get('src_type') == 'expense' and l.get('src_id'):
-            run("UPDATE expenses SET invoice_id = ?, status = 'invoiced' WHERE id = ? AND org_id = ?", doc_id, l['src_id'], org_id)
+            run(f"UPDATE expenses SET invoice_id = ?, status = 'invoiced' WHERE id = ? AND org_id = ? AND {_UNBILLED_EXPENSE}",
+                doc_id, l['src_id'], org_id, doc_id)
     # fixed-fee project lines (src_type 'project') keep the time entries they already billed
     project_ids = [int(l['src_id']) for l in lines if l.get('src_type') == 'project' and l.get('src_id')]
     keep = [r['id'] for r in all(f"SELECT id FROM time_entries WHERE invoice_id = ? AND org_id = ? AND project_id IN ({','.join('?' for _ in project_ids)})",
@@ -323,11 +342,11 @@ def _link_billables(org_id, doc_id, lines):
         run('UPDATE time_entries SET invoice_id = ? WHERE id = ? AND org_id = ?', doc_id, tid, org_id)
     for l in lines:
         if l.get('src_type') == 'time' and l.get('src_id'):
-            run('UPDATE time_entries SET invoice_id = ? WHERE id = ? AND org_id = ?', doc_id, l['src_id'], org_id)
+            _link_time(org_id, doc_id, l['src_id'])
     for l in lines:
-        if l.get('src_type') == 'time_entries' and l.get('src_ids'):
-            for tid in l['src_ids']:
-                run('UPDATE time_entries SET invoice_id = ? WHERE id = ? AND org_id = ?', doc_id, tid, org_id)
+        if l.get('src_type') == 'time_entries' and isinstance(l.get('src_ids'), list):
+            for tid in cap_list(l['src_ids'], 'time entries'):
+                _link_time(org_id, doc_id, tid)
 
 
 FREQUENCIES = ('daily', 'weekly', 'monthly', 'yearly')

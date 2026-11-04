@@ -12,7 +12,7 @@ from books.core.db import all, get, run, insert, update
 from books.core.router import bad, not_found, forbidden
 from books.core.util import audit
 from books.core.auth import can
-from books.core.entities import assert_entity_access
+from books.core.entities import assert_entity_access, visible_rows
 from books.core.jsutil import jsstr, num_or_none, to_int, truthy
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -132,7 +132,7 @@ def _list_files(req):
     if truthy(search):
         where.append('name ILIKE ?')
         params.append('%' + _jstr(search).replace('\\', '\\\\') + '%')
-    return all(f"SELECT {LIST_COLS} FROM files WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 1000", *params)
+    return visible_rows(req, all(f"SELECT {LIST_COLS} FROM files WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 1000", *params))
 
 
 def _create_file(req):

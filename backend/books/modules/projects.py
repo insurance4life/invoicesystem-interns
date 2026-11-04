@@ -183,7 +183,12 @@ def _clean_task(t):
     }
 
 
-def _sync_tasks(org_id, project_id, lst, may_delete=True):
+def _assert_may_price(req):
+    if req is not None and not can(req, 'sales', 'create'):
+        raise forbidden('You do not have permission to change project billing')
+
+
+def _sync_tasks(org_id, project_id, lst, may_delete=True, req=None):
     """Replace the task list: matching ids update, new rows insert, missing rows are removed. Removing a task is the
     same effect as DELETE /projects/:id/tasks/:tid, so it needs projects:delete (may_delete)."""
     keep = set()
@@ -192,8 +197,10 @@ def _sync_tasks(org_id, project_id, lst, may_delete=True):
         fields = _clean_task(t)
         if not fields['name']:
             continue
-        existing = get('SELECT id FROM project_tasks WHERE id = ? AND project_id = ? AND org_id = ?',
+        existing = get('SELECT id, rate FROM project_tasks WHERE id = ? AND project_id = ? AND org_id = ?',
                        num_or_none(t.get('id')), project_id, org_id) if truthy(t.get('id')) else None
+        if fields['rate'] != (round2(num(existing['rate'])) if existing else 0):
+            _assert_may_price(req)  # task rates price task-hours invoices
         if existing:
             update('project_tasks', existing['id'], fields)
             keep.add(existing['id'])
@@ -253,7 +260,28 @@ def _project_totals(org_id, p):
     }
 
 
-def project_view(org_id, id_):
+FINANCIAL_TOTALS = ('billed_amount', 'expenses_amount', 'labor_cost', 'revenue', 'cost', 'profit')
+
+
+def may_see_financials(req):
+    # projects:view is held by timesheet staff to log time; cost rates and profit are management data.
+    return req is None or can(req, 'reports', 'view')
+
+
+def _redact_users(users):
+    return [{k: v for k, v in u.items() if k != 'cost_rate'} if isinstance(u, dict) else u for u in users]
+
+
+def project_view(org_id, id_, req=None):
+    p = _project_view(org_id, id_)
+    if not may_see_financials(req):
+        p['users'] = _redact_users(p['users'])
+        p['totals'] = {k: v for k, v in p['totals'].items() if k not in FINANCIAL_TOTALS
+                       and not (k in ('budget', 'budget_used', 'budget_percent') and p['totals'].get('budget_type') == 'amount')}
+    return p
+
+
+def _project_view(org_id, id_):
     p = load_project(org_id, id_)
     p['tasks'] = all('SELECT * FROM project_tasks WHERE project_id = ? AND org_id = ? ORDER BY id', id_, org_id)
     names = {u['id']: u['name'] for u in all(
@@ -288,6 +316,9 @@ def _list_projects(req):
     for x in rows:
         x['users'] = _parse_users_loose(x.get('users'))
         out.append({**x, 'logged_hours': _hrs(x['logged_minutes']), 'unbilled_hours': _hrs(x['unbilled_minutes'])})
+    if not may_see_financials(req):
+        for x in out:
+            x['users'] = _redact_users(x['users'])
     return out
 
 
@@ -298,14 +329,19 @@ def _create_project(req):
         o = _clean_project(org, body)
         if not o.get('name'):
             raise bad('Project name is required')
+        # Same rule as _update_project: setting billing terms is the right to bill (sales:create).
+        priced = (o.get('billing_method') not in (None, 'project_hours') or jsnum(o.get('rate')) or o.get('customer_id')
+                  or any(jsnum(u.get('rate')) or jsnum(u.get('cost_rate')) for u in o.get('users') or []))
+        if priced:
+            _assert_may_price(req)
         id_ = insert('projects', {
             'billing_method': 'project_hours', 'rate': 0, 'budget_type': 'none', 'budget_hours': 0, 'budget_amount': 0,
             'status': 'active', 'users': [], **o, 'org_id': org,
         })
         if isinstance(body.get('tasks'), list):
-            _sync_tasks(org, id_, body['tasks'])
+            _sync_tasks(org, id_, body['tasks'], req=req)
         audit(req, 'project', id_, 'created', o['name'])
-        return project_view(org, id_)
+        return project_view(org, id_, req)
     return tx(_do)
 
 
@@ -316,6 +352,10 @@ def _update_project(req):
         cur = load_project(org, id_)
         body = _body(req)
         o = _clean_project(org, body)
+        if 'users' in o and not may_see_financials(req):
+            # Cost rates are hidden from this caller, so its form cannot echo them back: keep the stored ones.
+            kept = {u.get('user_id'): u.get('cost_rate') for u in cur.get('users') or [] if isinstance(u, dict)}
+            o['users'] = [{**u, 'cost_rate': round2(num(kept.get(u['user_id'])))} for u in o['users']]
         # Billing settings price the invoices raised from this project, so changing them needs the right to bill
         # (sales:create), not just projects:edit, which timesheet-only roles hold to log time.
         changed = [f for f in BILLING_FIELDS if f in o and o[f] != cur.get(f)]
@@ -324,9 +364,9 @@ def _update_project(req):
         if o:
             update('projects', id_, o)
         if isinstance(body.get('tasks'), list):
-            _sync_tasks(org, id_, body['tasks'], may_delete=can(req, 'projects', 'delete'))
+            _sync_tasks(org, id_, body['tasks'], may_delete=can(req, 'projects', 'delete'), req=req)
         audit(req, 'project', id_, 'updated')
-        return project_view(org, id_)
+        return project_view(org, id_, req)
     return tx(_do)
 
 
@@ -334,11 +374,15 @@ def _delete_project(req):
     def _do():
         org = req.org['id']
         p = load_project(org, to_int(req.params['id']))
-        used = get("""SELECT (SELECT COUNT(*) FROM documents WHERE project_id = ? AND org_id = ?) + (SELECT COUNT(*) FROM time_entries WHERE project_id = ?) n""",
-                   p['id'], org, p['id'])['n']
+        # Document lines and expenses carry the project too: unlinking them would rewrite posted (possibly
+        # locked) records and drop them from project reports, so any reference blocks the delete.
+        used = get("""SELECT (SELECT COUNT(*) FROM documents WHERE project_id = ? AND org_id = ?)
+                 + (SELECT COUNT(*) FROM document_lines l JOIN documents d ON d.id = l.document_id WHERE l.project_id = ? AND d.org_id = ?)
+                 + (SELECT COUNT(*) FROM expenses WHERE project_id = ? AND org_id = ?)
+                 + (SELECT COUNT(*) FROM time_entries WHERE project_id = ?) n""",
+                   p['id'], org, p['id'], org, p['id'], org, p['id'])['n']
         if used:
-            raise bad('This project has invoices, quotes or time entries. Mark it as inactive instead.')
-        run('UPDATE expenses SET project_id = NULL WHERE project_id = ? AND org_id = ?', p['id'], org)
+            raise bad('This project has transactions, expenses or time entries. Mark it as inactive instead.')
         run('DELETE FROM project_tasks WHERE project_id = ?', p['id'])
         run('DELETE FROM projects WHERE id = ?', p['id'])
         audit(req, 'project', p['id'], 'deleted', p['name'])
@@ -361,6 +405,8 @@ def _create_task(req):
         f = _clean_task(_body(req))
         if not f['name']:
             raise bad('Task name is required')
+        if f['rate']:
+            _assert_may_price(req)
         id_ = insert('project_tasks', {**f, 'org_id': org, 'project_id': pid})
         audit(req, 'project', pid, 'task added', f['name'])
         return get('SELECT * FROM project_tasks WHERE id = ?', id_)
@@ -383,6 +429,8 @@ def _update_task(req):
         f = _clean_task({**t, **_body(req)})
         if not f['name']:
             raise bad('Task name is required')
+        if f['rate'] != round2(num(t.get('rate'))):
+            _assert_may_price(req)
         update('project_tasks', t['id'], f)
         return get('SELECT * FROM project_tasks WHERE id = ?', t['id'])
     return tx(_do)
@@ -717,7 +765,7 @@ def _invoice_project(req):
 def routes(r):
     # ----- projects -----
     r.get('/projects', perm('projects', 'view'), _list_projects)
-    r.get('/projects/:id', perm('projects', 'view'), lambda req: project_view(req.org['id'], to_int(req.params['id'])))
+    r.get('/projects/:id', perm('projects', 'view'), lambda req: project_view(req.org['id'], to_int(req.params['id']), req))
     r.post('/projects', perm('projects', 'create'), _create_project)
     r.put('/projects/:id', perm('projects', 'edit'), _update_project)
     r.delete('/projects/:id', perm('projects', 'delete'), _delete_project)

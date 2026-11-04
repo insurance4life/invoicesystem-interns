@@ -1616,6 +1616,9 @@ def rpt_project_profitability(req):
         has_user = 'user_id' in b['tc']
         time = all(f'''SELECT t.project_id AS pid, {'t.user_id' if has_user else 'NULL'} AS user_id, SUM({b['hours']}) AS hours FROM time_entries t
       WHERE t.org_id = ? AND t.date >= ? AND t.date <= ? GROUP BY 1, 2 ORDER BY 1, 2 NULLS FIRST''', org_id, p['from'], p['to'])
+        time_by = {}  # one pass over the (project, user) aggregates instead of one per project
+        for t in time:
+            time_by.setdefault(t['pid'], []).append(t)
         rows = []
         for pr in projects:
             try:
@@ -1624,11 +1627,20 @@ def rpt_project_profitability(req):
                 users = []
             if not isinstance(users, list):
                 raise TypeError('users.find is not a function')
-            time_cost = 0
-            for t in time:
-                if t['pid'] != pr['id']:
+            by_user = {}  # first matching entry wins, as the former linear search did
+            for u in users:
+                if not isinstance(u, dict):
                     continue
-                u = next((u for u in users if isinstance(u, dict) and u.get('user_id') == t['user_id'] and type(u.get('user_id')) is not bool), None)
+                k = u.get('user_id')
+                if type(k) is bool:
+                    continue
+                try:
+                    by_user.setdefault(k, u)
+                except TypeError:  # unhashable ids never equal a user id
+                    continue
+            time_cost = 0
+            for t in time_by.get(pr['id'], ()):
+                u = by_user.get(t['user_id'])
                 time_cost = time_cost + _n(t['hours']) * jsnum((u or {}).get('cost_rate'))
             revenue = r2(rev.get(pr['id']))
             expense_cost = r2((bills.get(pr['id']) or 0) + (exps.get(pr['id']) or 0))
@@ -1709,10 +1721,14 @@ def rpt_budget_vs_actual(req):
     actual_rows = all('''SELECT l.account_id, substr(l.date, 1, 7) AS ym, SUM(l.debit) AS d, SUM(l.credit) AS c FROM ledger l
     WHERE l.org_id = ? AND l.date >= ? AND l.date <= ? GROUP BY l.account_id, ym ORDER BY l.account_id, ym''', org_id, start, fy_end)
 
+    actual_by = {}  # grouped once, so each account scans only its own months
+    for x in actual_rows:
+        actual_by.setdefault(x['account_id'], []).append(x)
+
     def actual_of(aid, period):
         a = accounts[aid]
-        return r2(sum_js(natural(a['type'], x['d'], x['c']) for x in actual_rows
-                         if x['account_id'] == aid and x['ym'] >= period['from'][0:7] and x['ym'] <= period['to'][0:7]))
+        return r2(sum_js(natural(a['type'], x['d'], x['c']) for x in actual_by.get(aid, ())
+                         if x['ym'] >= period['from'][0:7] and x['ym'] <= period['to'][0:7]))
 
     rows_by = {'income': [], 'expense': [], 'other': []}
     for aid, _key in ids:

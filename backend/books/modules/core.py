@@ -187,9 +187,11 @@ def routes(r):
     # ---------- comments ----------
     def _eid(v):
         try:
-            return int(float(v))
+            f = float(v)
         except (TypeError, ValueError):
             return None
+        # A fractional id would be authorized as one record and stored (rounded by the integer column) as another.
+        return int(f) if f.is_integer() else None
     def comments(req):
         et, eid = req.query.get('entity_type'), _eid(req.query.get('entity_id'))
         assert_entity_access(req, et, eid, 'view')
@@ -203,8 +205,11 @@ def routes(r):
             raise bad('Comment cannot be empty')
         if len(text) > COMMENT_MAX:
             raise bad(f'Comments can be at most {COMMENT_MAX} characters')
-        assert_entity_access(req, b.get('entity_type'), _eid(b.get('entity_id')), 'view')
-        cid = insert('comments', {'org_id': req.org['id'], 'entity_type': b.get('entity_type'), 'entity_id': b.get('entity_id'),
+        eid = _eid(b.get('entity_id'))
+        if eid is None:
+            raise bad('A valid record id is required')
+        assert_entity_access(req, b.get('entity_type'), eid, 'view')
+        cid = insert('comments', {'org_id': req.org['id'], 'entity_type': b.get('entity_type'), 'entity_id': eid,
                                   'user_id': req.user['id'], 'author': req.user['name'], 'text': text})
         return get('SELECT * FROM comments WHERE id = ?', cid)
     r.post('/comments', add_comment)

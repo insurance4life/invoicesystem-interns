@@ -5,6 +5,7 @@ Text ORDER BY keys use COLLATE "C" (and NULLS FIRST where the key may be NULL) t
 """
 import json
 import math
+import os
 import re
 
 from django.http import HttpResponse
@@ -594,7 +595,9 @@ def routes(r):  # noqa: C901
         audit(req, 'user', result['user']['id'], 'invited', f"{email} as {role['name']}")
         member = next((m for m in member_rows(req.org['id']) if m['id'] == result['user']['id']), None) or {}
         out = dict(member)
-        if result['temp_password']:
+        # The password belongs to a global account, so it is shown only when no mail server can deliver it, and
+        # then only to an Admin; with SMTP configured it travels by email alone.
+        if result['temp_password'] and not os.environ.get('SMTP_HOST') and req.role == 'Admin':
             out['temp_password'] = result['temp_password']
         return out
     r.post('/users/invite', perm('settings', 'create'), invite)
@@ -621,6 +624,11 @@ def routes(r):  # noqa: C901
                 raise bad('Status must be active or inactive')
             if m['status'] == 'invited' and b['status'] == 'active':
                 raise bad('This person has not accepted the invitation yet')
+            if b['status'] == 'active' and m['status'] != 'active' and 'role_id' not in patch:
+                # Reactivation restores the member's role: the caller must be able to grant it, as for a role change.
+                cur_role = role_in(req.org['id'], m['role_id'])
+                if cur_role:
+                    assert_can_grant(req, role_perms(cur_role))
             patch['status'] = b['status']
         next_role = get('SELECT name FROM roles WHERE id = ?', patch['role_id'])['name'] if patch.get('role_id') else m['role_name']
         next_status = patch.get('status') or m['status']

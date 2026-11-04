@@ -48,7 +48,7 @@ export default function IncomingWebhooks() {
   const columns = [
     { key: 'name', label: 'Name', render: (h) => <span className="bold">{h.name}</span> },
     { key: 'module', label: 'Writes to', render: (h) => ENTITY_LABELS[h.module] || h.module },
-    { key: 'url', label: 'URL', render: (h) => (
+    { key: 'url', label: 'URL', render: (h) => (!h.url ? <span className="muted small">Hidden: needs settings edit access</span> :
       <div className="row" style={{ gap: 8, alignItems: 'center' }}>
         <code className="small" style={{ wordBreak: 'break-all' }}>{fullUrl(h)}</code>
         <Button size="sm" onClick={() => copy(fullUrl(h))}>Copy</Button>

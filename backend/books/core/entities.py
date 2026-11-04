@@ -1,6 +1,6 @@
 """Which module's permissions govern a record referenced by (entity_type, entity_id), as used by comments,
 activity history and attachments. Unknown types fall back to settings, the most restrictive module."""
-from books.core.db import get
+from books.core.db import get, all as all_rows
 from books.core.auth import can
 from books.core.router import forbidden
 from books.core.documents import DOC_TYPES
@@ -31,6 +31,39 @@ def entity_module(org_id, entity_type, entity_id):
         p = get('SELECT type FROM payments WHERE id = ? AND org_id = ?', entity_id, org_id)
         return 'sales' if p and p['type'] == 'received' else 'purchases'
     return _FIXED.get(entity_type, 'settings')
+
+
+def visible_rows(req, rows, action='view'):
+    """Rows (with entity_type / entity_id) whose owning record the caller may `action`; unattached rows stay.
+    Document and payment sides are looked up in one query each, not per row."""
+    org = req.org['id']
+    side = {}
+    for et, table, col in (('document', 'documents', 'doc_type'), ('payment', 'payments', 'type')):
+        ids = sorted({r['entity_id'] for r in rows if r.get('entity_type') == et and isinstance(r.get('entity_id'), int)})
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ','.join('?' * len(chunk))
+            for x in all_rows(f'SELECT id, {col} AS k FROM {table} WHERE org_id = ? AND id IN ({marks})', org, *chunk):
+                side[(et, x['id'])] = (_side_module(x['k']) if et == 'document'
+                                       else ('sales' if x['k'] == 'received' else 'purchases'))
+    allowed = {}
+    out = []
+    for r in rows:
+        et = r.get('entity_type')
+        if not et:
+            out.append(r)
+            continue
+        if et in ('document', 'payment'):
+            mod = side.get((et, r.get('entity_id')), 'settings')
+        elif et in DOC_TYPES:
+            mod = _side_module(et)
+        else:
+            mod = _FIXED.get(et, 'settings')
+        if mod not in allowed:
+            allowed[mod] = can(req, mod, action)
+        if allowed[mod]:
+            out.append(r)
+    return out
 
 
 def assert_entity_access(req, entity_type, entity_id, action):

@@ -10,9 +10,9 @@ import re
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, HttpError
 from books.core.util import audit, assert_unlocked, next_number, org_settings, save_org_settings, today, cap_list
-from books.core.auth import perm
+from books.core.auth import perm, can
 from books.core.ledger import post, unpost, sys_account, avg_cost, stock_on_hand, clear_stock, add_stock_move
-from books.core.calc import round2, sum_js
+from books.core.calc import round2, sum_js, ACCOUNT_CLASS
 from books.core.documents import DOC_TYPES
 from books.core.jsutil import truthy, jsstr
 
@@ -171,15 +171,20 @@ def load_adjustment(org_id, adj_id):
     return a
 
 
-def _clean_adjustment(org, body):
+def _clean_adjustment(org, body, req=None):
     mode = 'value' if body.get('mode') == 'value' else 'quantity'
     date = body.get('date') if truthy(body.get('date')) else today()
     if truthy(body.get('account_id')):
         account_id = sql_num(body.get('account_id'))
     else:
         account_id = sys_account(org['id'], 'inventory_adjustment')
-    if not get('SELECT id FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id']):
+    acct = get('SELECT id, type FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id'])
+    if not acct:
         raise bad('Invalid adjustment account')
+    # The offset takes the other side of the stock posting: pointing it at a bank, equity or income account would be
+    # a journal entry, so items roles are held to expense and cost accounts.
+    if ACCOUNT_CLASS.get(acct['type']) != 'expense' and not (req is not None and can(req, 'accountant', 'edit')):
+        raise bad('The adjustment account must be an expense or cost of goods sold account')
     lines = []
     raw_lines = cap_list(body['lines'], 'lines') if isinstance(body.get('lines'), list) else []
     for l in raw_lines:
@@ -273,7 +278,7 @@ def _save_adjustment(req, body, adj_id=None):
 
     def _do():
         existing = load_adjustment(org['id'], adj_id) if adj_id else None
-        c = _clean_adjustment(org, body)
+        c = _clean_adjustment(org, body, req)
         ex_status = (existing or {}).get('status')
         status = 'adjusted' if (body.get('status') == 'adjusted'
                                 or (ex_status == 'adjusted' and body.get('status') != 'draft')) else 'draft'
@@ -506,7 +511,9 @@ def _update_price_list(req):
 def _delete_price_list(req):
     def _do():
         cur = load_price_list(req.org['id'], sql_num(req.params['id']))
-        run('UPDATE contacts SET price_list_id = NULL WHERE price_list_id = ? AND org_id = ?', cur['id'], req.org['id'])
+        # Clearing it from contacts would change their pricing under items:delete alone, without contacts:edit.
+        if get('SELECT 1 FROM contacts WHERE price_list_id = ? AND org_id = ? LIMIT 1', cur['id'], req.org['id']):
+            raise bad('This price list is assigned to contacts. Remove it from those contacts first.')
         run('DELETE FROM price_lists WHERE id = ?', cur['id'])
         audit(req, 'price_list', cur['id'], 'deleted', cur['name'])
         return {'ok': True}

@@ -127,6 +127,16 @@ _READ_RIGHTS = {'contact': ['contacts'], 'item': ['items'], 'expense': ['purchas
 def assert_rule_reader(req, data):
     """Email and webhook actions copy the triggering record (including document share links) to an address the
     author chooses, so the author must be able to read that record's module, not just hold settings rights."""
+    if any(a.get('type') == 'field_update' for a in data['actions']):
+        target = {'contact': 'contacts', 'item': 'items'}.get(data['module'], 'settings')
+        if not can(req, target, 'edit'):
+            raise forbidden('You need edit access to these records to change them with a workflow')
+        for a in data['actions']:
+            if a.get('type') == 'field_update' and a.get('field') == 'payment_term_id' and a.get('value') not in ('', None):
+                n = js_number(a.get('value'))
+                ok = not (isinstance(n, float) and math.isnan(n)) and get('SELECT id FROM payment_terms WHERE id = ? AND org_id = ?', n2i(n), req.org['id'])
+                if not ok:
+                    raise bad('Choose a payment term from this organization')
     if not any(a.get('type') in ('email', 'webhook') for a in data['actions']):
         return
     if data['module'] == 'document':
@@ -200,8 +210,19 @@ def rule_row(org_id, id):  # noqa: A002
     return parse_json(r, ['conditions', 'actions'])
 
 
-def hook_view(hook):
+def hook_view(hook, req=None):
+    if req is not None and not can(req, 'settings', 'edit'):
+        return {k: v for k, v in hook.items() if k != 'token'}  # the token alone lets anyone post into the org
     return {**hook, 'url': f"/api/public/hooks/{hook['token']}"}
+
+
+def rule_out(req, rule):
+    """Webhook header values are usually third-party credentials: hidden from read-only settings roles."""
+    if can(req, 'settings', 'edit'):
+        return rule
+    acts = [{**a, 'headers': {k: '********' for k in (a.get('headers') or {})}} if isinstance(a, dict) and a.get('type') == 'webhook' else a
+            for a in (rule.get('actions') or [])]
+    return {**rule, 'actions': acts}
 
 
 def hook_row(org_id, id):  # noqa: A002
@@ -509,10 +530,10 @@ on_event(_on_event)
 
 # ---------- routes ----------
 def routes(r):
-    r.get('/automation/rules', perm('settings', 'view'), lambda req: [parse_json(x, ['conditions', 'actions']) for x in all(
+    r.get('/automation/rules', perm('settings', 'view'), lambda req: [rule_out(req, parse_json(x, ['conditions', 'actions'])) for x in all(
         'SELECT * FROM workflow_rules WHERE org_id = ? ORDER BY name COLLATE "C", id', req.org['id'])])
 
-    r.get('/automation/rules/:id', perm('settings', 'view'), lambda req: rule_row(req.org['id'], req.params['id']))
+    r.get('/automation/rules/:id', perm('settings', 'view'), lambda req: rule_out(req, rule_row(req.org['id'], req.params['id'])))
 
     def post_rule(req):
         data = validate_rule(req.body if isinstance(req.body, dict) else {})
@@ -560,7 +581,7 @@ def routes(r):
           WHERE {' AND '.join(where)} ORDER BY l.id DESC LIMIT ?''', *p, lim)
     r.get('/automation/logs', perm('settings', 'view'), logs)
 
-    r.get('/automation/incoming-webhooks', perm('settings', 'view'), lambda req: [hook_view(h) for h in all(
+    r.get('/automation/incoming-webhooks', perm('settings', 'view'), lambda req: [hook_view(h, req) for h in all(
         'SELECT * FROM incoming_webhooks WHERE org_id = ? ORDER BY name COLLATE "C", id', req.org['id'])])
 
     def post_hook(req):
@@ -596,7 +617,7 @@ def public_routes(pub):
         if not hook:
             raise not_found('Webhook')
         body = req.body if isinstance(req.body, (dict, list)) else {}
-        text = sstr(_or(bget(body, 'text'), bget(body, 'message'), bget(body, 'comment'))) or js_json(body)[:2000]
+        text = (sstr(_or(bget(body, 'text'), bget(body, 'message'), bget(body, 'comment'))) or js_json(body)[:2000])[:5000]
         n = js_number(bget(body, 'entity_id'))
         target = load_record(hook['org_id'], hook['module'], n2i(n)) if (not (isinstance(n, float) and math.isnan(n)) and n) else None
         insert('activity', {
@@ -606,7 +627,7 @@ def public_routes(pub):
         if target:
             insert('comments', {
                 'org_id': hook['org_id'], 'entity_type': hook['module'], 'entity_id': target['id'], 'user_id': None,
-                'author': f"Webhook: {hook['name']}", 'text': text[:5000],
+                'author': f"Webhook: {hook['name']}", 'text': text,
             })
         return {'ok': True, 'comment': bool(target)}
     pub.post('/hooks/:token', incoming)

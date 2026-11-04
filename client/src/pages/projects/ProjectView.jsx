@@ -35,6 +35,7 @@ export default function ProjectView() {
   if (proj.error) return <div className="page"><div className="empty"><h3>{proj.error.message}</h3><Link to="/time/projects">Back to projects</Link></div></div>;
   if (!p) return <div className="center pad"><span className="spin" /></div>;
   const t = p.totals;
+  const fin = 'profit' in t; // cost and profit come back only to roles that can view reports
   const reloadAll = () => { proj.reload(); entries.reload(); };
 
   const act = async (fn, msg) => {
@@ -73,11 +74,11 @@ export default function ProjectView() {
           <div className="grid4">
             <Stat label="Logged hours" value={hrs(t.logged_hours)} sub={`${hrs(t.billable_hours)} billable`} />
             <Stat label="Unbilled hours" value={hrs(t.unbilled_hours)} sub="ready to invoice" tone={t.unbilled_hours > 0 ? 'orange' : undefined} />
-            <Stat label="Billed amount" value={money(t.billed_amount)} sub="invoiced, excluding tax" />
-            <Stat label="Profit" value={money(t.profit)} sub={`cost ${money(t.cost)}`} tone={t.profit < 0 ? 'red' : 'green'} />
+            {fin && <Stat label="Billed amount" value={money(t.billed_amount)} sub="invoiced, excluding tax" />}
+            {fin && <Stat label="Profit" value={money(t.profit)} sub={`cost ${money(t.cost)}`} tone={t.profit < 0 ? 'red' : 'green'} />}
           </div>
 
-          {t.budget_type !== 'none' && (
+          {t.budget_type !== 'none' && t.budget != null && (
             <Card title={t.budget_type === 'hours' ? 'Hours budget' : 'Amount budget'}>
               <div className="row between" style={{ marginBottom: 8 }}>
                 <span>
@@ -92,7 +93,7 @@ export default function ProjectView() {
           )}
 
           <div className="grid2" style={{ alignItems: 'start' }}>
-            <Card title="Profitability">
+            {fin && <Card title="Profitability">
               <KeyValue items={[
                 ['Invoiced revenue', money(t.revenue)],
                 ['Expenses', money(t.expenses_amount)],
@@ -100,14 +101,14 @@ export default function ProjectView() {
                 ['Profit', <span className={t.profit < 0 ? 'neg bold' : 'bold'}>{money(t.profit)}</span>],
               ]} />
               <p className="muted small" style={{ marginBottom: 0 }}>Profit = invoiced revenue − (expenses + logged hours × staff cost rate).</p>
-            </Card>
+            </Card>}
             <Card title="Team">
               <Table
                 columns={[
                   { key: 'name', label: 'Name' },
                   { key: 'rate', label: 'Billing rate', align: 'right', render: (u) => money(u.rate) },
-                  { key: 'cost_rate', label: 'Cost rate', align: 'right', render: (u) => money(u.cost_rate) },
-                ]}
+                  fin && { key: 'cost_rate', label: 'Cost rate', align: 'right', render: (u) => money(u.cost_rate) },
+                ].filter(Boolean)}
                 rows={p.users}
                 rowKey="user_id"
                 empty="No one is assigned to this project."

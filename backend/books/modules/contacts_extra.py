@@ -6,6 +6,7 @@ from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, forbidden, HttpError  # noqa: F401 (HttpError re-exported for callers)
 from books.core.util import audit, org_settings, token, today, assert_unlocked
 from books.core.auth import perm, can
+from books.core.documents import DOC_TYPES
 from books.core.calc import round2, INDIAN_STATES
 from books.core.ledger import post, sys_account, add_stock_move, repost_opening, unpost_opening
 from books.core.mailer import send_email, fill_template, DEFAULT_TEMPLATES
@@ -103,6 +104,9 @@ def statement_for(org, c, frm=FAR_PAST, to=FAR_FUTURE):
 def _statement(req):
     from books.modules.contacts import load_contact  # noqa: PLC0415 (loaded lazily: contacts is ported separately)
     c = load_contact(req.org['id'], sql_num(req.params['id']))
+    # A statement lists the contact's invoices or bills and payments, so it needs that side's view right too.
+    if not can(req, 'sales' if c.get('type') == 'customer' else 'purchases', 'view'):
+        raise forbidden()
     return statement_for(req.org, c, _or(req.query.get('from'), FAR_PAST), _or(req.query.get('to'), FAR_FUTURE))
 
 
@@ -260,6 +264,26 @@ def _assert_merge_unlocked(org, cid):
             assert_unlocked(org, d, kind)
 
 
+def _assert_merge_rights(req, org, cid):
+    """Merging re-points the contact's invoices, bills, payments, expenses, journals and bank lines, which is an edit
+    of those records: contacts:delete alone does not carry that right."""
+    o = org['id']
+    sales_types = [t for t, d in DOC_TYPES.items() if d.get('side') == 'sales']
+    marks = ','.join('?' * len(sales_types))
+    has = get(f"""SELECT
+        (SELECT COUNT(*) FROM documents WHERE org_id = ? AND contact_id = ? AND doc_type IN ({marks}))
+          + (SELECT COUNT(*) FROM payments WHERE org_id = ? AND contact_id = ? AND type = 'received') AS sales,
+        (SELECT COUNT(*) FROM documents WHERE org_id = ? AND contact_id = ? AND doc_type NOT IN ({marks}))
+          + (SELECT COUNT(*) FROM payments WHERE org_id = ? AND contact_id = ? AND type = 'made')
+          + (SELECT COUNT(*) FROM expenses WHERE org_id = ? AND (vendor_id = ? OR customer_id = ?)) AS purchases,
+        (SELECT COUNT(*) FROM bank_txns WHERE org_id = ? AND contact_id = ?) AS banking,
+        (SELECT COUNT(*) FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND jl.contact_id = ?) AS accountant""",
+              o, cid, *sales_types, o, cid, o, cid, *sales_types, o, cid, o, cid, cid, o, cid, o, cid)
+    for module in ('sales', 'purchases', 'banking', 'accountant'):
+        if has[module] and not can(req, module, 'edit'):
+            raise forbidden(f'Merging moves {module} records, which needs {module} edit access')
+
+
 def _merge(req):
     from books.modules.contacts import load_contact  # noqa: PLC0415
 
@@ -291,6 +315,7 @@ def _merge(req):
             # Merging re-attributes every record of the source, so none may sit in a locked period, checked against the
             # lock area of each record kind (sales, purchases, banking), not just the accountant lock.
             _assert_merge_unlocked(org, s['id'])
+            _assert_merge_rights(req, org, s['id'])
             moved_docs = all('SELECT id FROM documents WHERE contact_id = ? AND org_id = ?', s['id'], org['id'])
             run('UPDATE documents SET contact_id = ? WHERE contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
             for d in moved_docs:  # share links were issued to the source contact, as on a normal contact change

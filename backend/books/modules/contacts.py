@@ -6,6 +6,7 @@ from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, forbidden
 from books.core.util import token, audit, round2, today
 from books.core.auth import perm, can
+from books.core.documents import DOC_TYPES
 from books.core.jsutil import to_int, truthy
 from books.core.ledger import sys_account, repost_opening, unpost_opening
 from books.core.payments import available_credits
@@ -60,6 +61,14 @@ def _post_opening(org, id, type_, amount, date):  # noqa: A002
     repost_opening(org, 'contact_opening', id, date or today(), lines, number='Opening Balance', contact_id=id)
 
 
+def contact_out(req, c):
+    """The portal token opens the customer's invoices, payments and a public pay page: hide it from roles without
+    sales:view."""
+    if not can(req, 'sales', 'view'):
+        c = {k: v for k, v in c.items() if k != 'portal_token'}
+    return c
+
+
 def load_contact(org_id, id):  # noqa: A002
     c = parse_json(get('SELECT * FROM contacts WHERE id = ? AND org_id = ?', id, org_id), JSON_COLS)
     if not c:
@@ -98,7 +107,7 @@ def routes(r):
         return [{**x, 'outstanding': round2(x['outstanding'])} for x in rows]
     r.get('/contacts', perm('contacts', 'view'), list_contacts)
 
-    r.get('/contacts/:id', perm('contacts', 'view'), lambda req: load_contact(req.org['id'], to_int(req.params['id'])))
+    r.get('/contacts/:id', perm('contacts', 'view'), lambda req: contact_out(req, load_contact(req.org['id'], to_int(req.params['id']))))
 
     def create(req):
         def _do():
@@ -170,11 +179,16 @@ def routes(r):
         req.org['id'], to_int(req.params['id'])))
 
     def transactions(req):
+        # contacts:view opens the contact, not its money: each list needs the view right of the module that owns it.
         cid = to_int(req.params['id'])
         oid = req.org['id']
+        sales, purchases = can(req, 'sales', 'view'), can(req, 'purchases', 'view')
+        types = [t for t, d in DOC_TYPES.items() if (sales if d.get('side') == 'sales' else purchases)]
+        pay = [t for t, ok in (('received', sales), ('made', purchases)) if ok]
+        marks = lambda xs: ','.join('?' * len(xs))  # noqa: E731
         return {
-            'documents': all('SELECT id, doc_type, number, date, due_date, total, balance, status FROM documents WHERE org_id = ? AND contact_id = ? ORDER BY date DESC, id DESC', oid, cid),
-            'payments': all('SELECT id, type, number, date, amount, mode, reference FROM payments WHERE org_id = ? AND contact_id = ? ORDER BY date DESC, id DESC', oid, cid),
-            'expenses': all('SELECT id, date, total, reference, status FROM expenses WHERE org_id = ? AND (vendor_id = ? OR customer_id = ?) AND is_profile = 0 ORDER BY date DESC, id DESC', oid, cid, cid),
+            'documents': all(f'SELECT id, doc_type, number, date, due_date, total, balance, status FROM documents WHERE org_id = ? AND contact_id = ? AND doc_type IN ({marks(types)}) ORDER BY date DESC, id DESC', oid, cid, *types) if types else [],
+            'payments': all(f'SELECT id, type, number, date, amount, mode, reference FROM payments WHERE org_id = ? AND contact_id = ? AND type IN ({marks(pay)}) ORDER BY date DESC, id DESC', oid, cid, *pay) if pay else [],
+            'expenses': all('SELECT id, date, total, reference, status FROM expenses WHERE org_id = ? AND (vendor_id = ? OR customer_id = ?) AND is_profile = 0 ORDER BY date DESC, id DESC', oid, cid, cid) if purchases else [],
         }
     r.get('/contacts/:id/transactions', perm('contacts', 'view'), transactions)

@@ -10,7 +10,7 @@ import time
 
 from books.core.db import all, get, run, update, tx, safe, parse_json
 from books.core.router import bad, not_found, forbidden, HttpError
-from books.core.util import audit, round2, assert_unlocked, clean_body
+from books.core.util import audit, round2, assert_unlocked, clean_body, cap_list
 from books.core.auth import perm, can
 from books.core.jsutil import jsstr, truthy, to_int, now_iso, today
 from books.core.ledger import post, unpost, sys_account, account_class, account_in_use
@@ -1341,6 +1341,9 @@ def routes(r):
             raise TypeError('payment_ids.map is not a function')
         if not payment_ids:
             raise bad('Select the payments to deposit')
+        cap_list(payment_ids, 'payments')
+        if len({_id(p) for p in payment_ids}) != len(payment_ids):
+            raise bad('Each payment can be deposited only once')  # a repeat would pass the already-deposited check
 
         def _do():
             items = []

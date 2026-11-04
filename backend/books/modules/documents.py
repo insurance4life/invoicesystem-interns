@@ -105,6 +105,8 @@ def routes(r):
     def create(req):
         t = req.params['type']
         _guard(req, t, 'create')
+        if req.body.get('save_as') in ('send', 'open'):
+            _guard(req, t, 'edit')  # same right the /action route requires for mark_sent and open
         res = save_document(req, t, req.body)
         doc, warnings = res['doc'], res['warnings']
         audit(req, 'document', doc['id'], 'created', f"{DOC_TYPES[t]['label']} {doc['number']}")

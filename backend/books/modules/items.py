@@ -4,7 +4,9 @@ import json
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found
 from books.core.util import audit, round2, today, org_settings, assert_owned, assert_unlocked
-from books.core.auth import perm
+from books.core.auth import perm, can
+from books.core.calc import ACCOUNT_CLASS
+from books.core.documents import DOC_TYPES
 from books.core.jsutil import to_int, truthy
 from books.core.ledger import (post, unpost, sys_account, clear_stock, add_stock_move, stock_on_hand, avg_cost, assert_source_unlocked,
                                posting_unchanged)
@@ -79,6 +81,14 @@ def _clean(body, org, is_new):
     if o.get('inventory_account_id') is not None and not get("SELECT id FROM accounts WHERE id = ? AND org_id = ? AND type = 'stock'",
                                                              o['inventory_account_id'], org['id']):
         raise bad('The inventory account must be a Stock account')
+    # Invoice and bill lines post to these accounts, so an items role must not aim them at bank, equity or liabilities.
+    for key, ok, label in (('sales_account_id', ('income',), 'an income'), ('purchase_account_id', ('expense', 'asset_stock'), 'an expense, cost or stock')):
+        if o.get(key) is None:
+            continue
+        a = get('SELECT type FROM accounts WHERE id = ? AND org_id = ?', o[key], org['id'])
+        cls = 'asset_stock' if a and a['type'] == 'stock' else ACCOUNT_CLASS.get((a or {}).get('type'))
+        if cls not in ok:
+            raise bad(f"The {'sales' if key == 'sales_account_id' else 'purchase'} account must be {label} account")
     return o
 
 
@@ -113,9 +123,13 @@ def routes(r):
 
     def get_item(req):
         i = load_item(req.org['id'], to_int(req.params['id']))
-        i['transactions'] = all('''SELECT d.id, d.doc_type, d.number, d.date, c.display_name AS contact_name, l.quantity, l.rate, l.amount, d.status
+        # items:view opens the item; each document line also needs the view right of its sales or purchases side.
+        sales, purchases = can(req, 'sales', 'view'), can(req, 'purchases', 'view')
+        types = [t for t, d in DOC_TYPES.items() if (sales if d.get('side') == 'sales' else purchases)]
+        i['transactions'] = all(f'''SELECT d.id, d.doc_type, d.number, d.date, c.display_name AS contact_name, l.quantity, l.rate, l.amount, d.status
                                   FROM document_lines l JOIN documents d ON d.id = l.document_id LEFT JOIN contacts c ON c.id = d.contact_id
-                                  WHERE l.item_id = ? ORDER BY d.date DESC, d.id, l.id LIMIT 100''', i['id'])
+                                  WHERE l.item_id = ? AND d.org_id = ? AND d.doc_type IN ({','.join('?' * len(types))})
+                                  ORDER BY d.date DESC, d.id, l.id LIMIT 100''', i['id'], req.org['id'], *types) if types else []
         i['stock_moves'] = all('SELECT * FROM stock_moves WHERE item_id = ? ORDER BY date DESC, id DESC LIMIT 100', i['id']) if i.get('track_inventory') else []
         return i
     r.get('/items/:id', perm('items', 'view'), get_item)

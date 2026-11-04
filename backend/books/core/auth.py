@@ -135,7 +135,7 @@ def perm(module, action):
 
 
 ADMIN_PERMS = {'*': ['view', 'create', 'edit', 'delete', 'approve']}
-STAFF_PERMS = {m: ['view', 'create', 'edit', 'delete'] for m in MODULES if m != 'settings'}
+STAFF_PERMS = {m: ['view', 'create', 'edit', 'delete'] for m in MODULES if m not in ('settings', 'accountant', 'reports')}
 STAFF_LIMITED_PERMS = {m: ['view', 'create', 'edit'] for m in ['contacts', 'items', 'sales', 'purchases', 'projects', 'documents']}
 TIMESHEET_PERMS = {'projects': ['view', 'create', 'edit']}
 ACCOUNTANT_PERMS = {m: ['view', 'create', 'edit', 'delete', 'approve'] for m in ['contacts', 'items', 'sales', 'purchases', 'banking', 'accountant', 'reports', 'documents']}
