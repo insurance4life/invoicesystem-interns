@@ -1,10 +1,11 @@
 """Generic sales & purchase document engine (port of documents.js)."""
 import datetime
 import json
+import logging
 
 from books.core.db import all, get, run, insert, update, tx, parse_json
-from books.core.router import bad, not_found
-from books.core.util import round2, token, next_number, org_settings, assert_unlocked, assert_owned
+from books.core.router import bad, not_found, HttpError
+from books.core.util import round2, token, next_number, org_settings, assert_unlocked, assert_owned, cap_list
 from books.core.jsutil import jsnum, jsstr, today, now_iso, truthy, to_int
 from books.core.calc import compute_document, due_date_for, add_days
 from books.core.ledger import post, unpost, sys_account, tax_account, avg_cost, clear_stock, add_stock_move
@@ -26,6 +27,7 @@ DOC_TYPES = {
 
 JSON_COLS = ['taxes', 'billing_address', 'shipping_address', 'recurrence', 'custom_fields']
 LIVE = {'open', 'closed', 'paid'}
+log = logging.getLogger('openbooks')
 
 
 def _has_applications(org_id, d):
@@ -188,7 +190,7 @@ def save_document(req, type_, body, id=None):  # noqa: A002
         if contact and contact['type'] != cfg['contact']:
             raise bad(f"Selected contact is not a {cfg['contact']}")
 
-        raw_lines = [l for l in (body.get('lines') or []) if truthy(l.get('item_id')) or truthy(l.get('name')) or truthy(l.get('description'))
+        raw_lines = [l for l in (cap_list(body.get('lines'), 'lines') or []) if truthy(l.get('item_id')) or truthy(l.get('name')) or truthy(l.get('description'))
                      or truthy(l.get('account_id')) or jsnum(l.get('rate'))]
         if not raw_lines:
             raise bad('Add at least one line item')
@@ -696,32 +698,49 @@ def run_recurring(org_id, req_like):
     created = 0
     profiles = all("SELECT id, doc_type FROM documents WHERE org_id = ? AND doc_type IN ('recurring_invoice','recurring_bill') AND status = 'active' ORDER BY id", org_id)
     for p in profiles:
-        guard = 0
-        while True:
-            if created >= RECURRING_RUN_LIMIT:
-                return created
-            prof = load_doc(org_id, p['id'])
-            r = prof.get('recurrence') or {}
-            if not r.get('next_date') or r['next_date'] > now or guard > 120:
-                break
-            guard += 1
-            if r.get('end_date') and r['next_date'] > r['end_date']:
-                update('documents', p['id'], {'status': 'expired'})
-                break
-            child_type = DOC_TYPES[p['doc_type']]['profile']
-            doc = save_document(req_like, child_type, {
-                'contact_id': prof['contact_id'], 'date': r['next_date'], 'payment_term_id': prof['payment_term_id'], 'lines': prof['lines'],
-                'discount_type': prof['discount_type'], 'discount_value': prof['discount_value'], 'shipping': prof['shipping'],
-                'adjustment': prof['adjustment'], 'tax_inclusive': prof['tax_inclusive'], 'notes': prof['notes'], 'terms': prof['terms'],
-                'place_of_supply': prof['place_of_supply'], 'currency': prof['currency'], 'exchange_rate': prof['exchange_rate'],
-                'reference': prof['reference'],
-            })['doc']
-            update('documents', doc['id'], {'profile_id': p['id']})
-            if r.get('auto_send'):
-                doc_action(req_like, child_type, doc['id'], 'mark_sent')
-            created += 1
-            next_date = advance_date(r['next_date'], r.get('frequency'), r.get('every'))
-            update('documents', p['id'], {'recurrence': _j({**r, 'next_date': next_date, 'last_run': now})})
+        try:
+            created = _run_profile(org_id, req_like, p, now, created)
+        except HttpError as e:
+            # One profile that cannot generate (for example a locked period) must not stop the others.
+            _profile_failed('documents', p['id'], load_doc(org_id, p['id']).get('recurrence') or {}, e)
+        if created >= RECURRING_RUN_LIMIT:
+            return created
+    return created
+
+
+def _profile_failed(table, pid, r, err):
+    log.warning('recurring %s profile %s skipped: %s', table, pid, err.message)
+    update(table, pid, {'recurrence': _j({**r, 'last_error': err.message, 'last_error_at': now_iso()})})
+
+
+def _run_profile(org_id, req_like, p, now, created):
+    """Generate the due documents of one profile; returns the running total created this run."""
+    guard = 0
+    while True:
+        if created >= RECURRING_RUN_LIMIT:
+            return created
+        prof = load_doc(org_id, p['id'])
+        r = prof.get('recurrence') or {}
+        if not r.get('next_date') or r['next_date'] > now or guard > 120:
+            break
+        guard += 1
+        if r.get('end_date') and r['next_date'] > r['end_date']:
+            update('documents', p['id'], {'status': 'expired'})
+            break
+        child_type = DOC_TYPES[p['doc_type']]['profile']
+        doc = save_document(req_like, child_type, {
+            'contact_id': prof['contact_id'], 'date': r['next_date'], 'payment_term_id': prof['payment_term_id'], 'lines': prof['lines'],
+            'discount_type': prof['discount_type'], 'discount_value': prof['discount_value'], 'shipping': prof['shipping'],
+            'adjustment': prof['adjustment'], 'tax_inclusive': prof['tax_inclusive'], 'notes': prof['notes'], 'terms': prof['terms'],
+            'place_of_supply': prof['place_of_supply'], 'currency': prof['currency'], 'exchange_rate': prof['exchange_rate'],
+            'reference': prof['reference'],
+        })['doc']
+        update('documents', doc['id'], {'profile_id': p['id']})
+        if r.get('auto_send'):
+            doc_action(req_like, child_type, doc['id'], 'mark_sent')
+        created += 1
+        next_date = advance_date(r['next_date'], r.get('frequency'), r.get('every'))
+        update('documents', p['id'], {'recurrence': _j({**r, 'next_date': next_date, 'last_run': now})})
     return created
 
 

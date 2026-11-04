@@ -33,7 +33,7 @@ API_LOCK = threading.RLock()
 CURRENT_USER_ID = contextvars.ContextVar('openbooks_current_user_id', default=None)
 # Password hashing is deliberately slow, so these routes take API_LOCK themselves only around their database writes
 # instead of holding it for the whole request (login only reads). They are also rate limited per client address.
-SELF_LOCKING = {('POST', '/auth/login'), ('POST', '/auth/signup'), ('PUT', '/auth/me')}
+SELF_LOCKING = {('POST', '/auth/login'), ('POST', '/auth/signup'), ('PUT', '/auth/me'), ('POST', '/users/invite')}
 _AUTH_HITS = {}
 _AUTH_MUTEX = threading.Lock()
 

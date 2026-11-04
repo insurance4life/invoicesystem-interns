@@ -2,14 +2,15 @@
 import json
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
-from books.core.router import bad, not_found
-from books.core.util import audit, round2, today, next_number, assert_unlocked, assert_owned, clean_body
-from books.core.auth import perm
+from books.core.router import bad, not_found, forbidden, HttpError
+from books.core.util import audit, round2, today, next_number, assert_unlocked, assert_owned, clean_body, cap_list
+from books.core.auth import perm, can
 from books.core.jsutil import jsnum, jsstr, to_int, truthy
-from books.core.ledger import post, unpost, account_class
-from books.core.documents import advance_date, validate_recurrence
+from books.core.ledger import post, unpost, account_class, account_in_use
+from books.core.documents import advance_date, validate_recurrence, RECURRING_RUN_LIMIT
 from books.core.calc import ACCOUNT_CLASS, sum_js
 
+BANK_TYPES = ('bank', 'credit_card', 'cash', 'payment_clearing')  # same list as modules/banking.py
 ACC_FIELDS = ['code', 'name', 'type', 'parent_id', 'description', 'is_active', 'currency', 'watchlist', 'bank_name', 'account_number', 'ifsc']
 
 
@@ -67,7 +68,7 @@ def save_journal(req, body, id=None):  # noqa: A002
             assert_unlocked(org, existing['date'], 'journal')
         if not truthy(is_profile) and jtype != 'template':
             assert_unlocked(org, date, 'journal')
-        lines = [l for l in (body.get('lines') or []) if truthy(l.get('account_id')) and (jsnum(l.get('debit')) or jsnum(l.get('credit')))]
+        lines = [l for l in (cap_list(body.get('lines'), 'journal lines') or []) if truthy(l.get('account_id')) and (jsnum(l.get('debit')) or jsnum(l.get('credit')))]
         if len(lines) < 2:
             raise bad('A journal needs at least two lines')
         for l in lines:
@@ -125,16 +126,22 @@ def run_recurring_journals(org, req):
         prof = load_journal(org['id'], p['id'])
         r = prof.get('recurrence') or {}
         guard = 0
-        while r.get('status') == 'active' and r.get('next_date') and r['next_date'] <= now and guard < 120:
-            guard += 1
-            if r.get('end_date') and r['next_date'] > r['end_date']:
-                r['status'] = 'expired'
-                break
-            j = save_journal(req, {'date': r['next_date'], 'reference': prof['reference'], 'notes': prof['notes'], 'is_profile': 0, 'status': 'published', 'lines': prof['lines']})
-            update('journals', j['id'], {'profile_id': prof['id']})
-            n += 1
-            r = {**r, 'next_date': advance_date(r['next_date'], r.get('frequency'), r.get('every')), 'last_run': now}
+        try:
+            while (r.get('status') == 'active' and r.get('next_date') and r['next_date'] <= now and guard < 120
+                   and n < RECURRING_RUN_LIMIT):
+                guard += 1
+                if r.get('end_date') and r['next_date'] > r['end_date']:
+                    r['status'] = 'expired'
+                    break
+                j = save_journal(req, {'date': r['next_date'], 'reference': prof['reference'], 'notes': prof['notes'], 'is_profile': 0, 'status': 'published', 'lines': prof['lines']})
+                update('journals', j['id'], {'profile_id': prof['id']})
+                n += 1
+                r = {**r, 'next_date': advance_date(r['next_date'], r.get('frequency'), r.get('every')), 'last_run': now}
+        except HttpError as e:  # e.g. a locked period: record it on this profile and carry on with the others
+            r = {**r, 'last_error': e.message, 'last_error_at': now}
         update('journals', p['id'], {'recurrence': _j(r)})
+        if n >= RECURRING_RUN_LIMIT:
+            break
     return n
 
 
@@ -190,10 +197,10 @@ def routes(r):
         a = account_with_balance(req.org['id'], to_int(req.params['id']))
         if a.get('is_system'):
             raise bad('System accounts cannot be deleted')
-        used = get('''SELECT (SELECT COUNT(*) FROM ledger WHERE account_id = ? AND org_id = ?) + (SELECT COUNT(*) FROM document_lines WHERE account_id = ?)
-                      + (SELECT COUNT(*) FROM items WHERE sales_account_id = ? OR purchase_account_id = ? OR inventory_account_id = ?)
-                      + (SELECT COUNT(*) FROM accounts WHERE parent_id = ? AND org_id = ?) n''', a['id'], a['org_id'], a['id'], a['id'], a['id'], a['id'], a['id'], a['org_id'])['n']
-        asset_use = get('SELECT COUNT(*) n FROM fixed_assets WHERE ? IN (asset_account_id, expense_account_id, accumulated_account_id, disposal_account_id)', a['id'])['n']
+        if a['type'] in BANK_TYPES and not can(req, 'banking', 'delete'):
+            raise forbidden('Bank and card accounts are deleted from Banking')
+        used = account_in_use(req.org['id'], a['id'])
+        asset_use = 0
         for b in all('SELECT lines FROM budgets WHERE org_id = ?', req.org['id']):
             try:
                 if str(a['id']) in (json.loads(b['lines'] or '{}') or {}):

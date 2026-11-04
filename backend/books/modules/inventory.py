@@ -9,7 +9,7 @@ import re
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, HttpError
-from books.core.util import audit, assert_unlocked, next_number, org_settings, save_org_settings, today
+from books.core.util import audit, assert_unlocked, next_number, org_settings, save_org_settings, today, cap_list
 from books.core.auth import perm
 from books.core.ledger import post, unpost, sys_account, avg_cost, stock_on_hand, clear_stock, add_stock_move
 from books.core.calc import round2, sum_js
@@ -181,7 +181,7 @@ def _clean_adjustment(org, body):
     if not get('SELECT id FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id']):
         raise bad('Invalid adjustment account')
     lines = []
-    raw_lines = body['lines'] if isinstance(body.get('lines'), list) else []
+    raw_lines = cap_list(body['lines'], 'lines') if isinstance(body.get('lines'), list) else []
     for l in raw_lines:
         l = l if isinstance(l, dict) else {}
         item_id = nz(l.get('item_id'))
@@ -398,7 +398,7 @@ def _clean_price_list(org, body):
     typ = body.get('type') if body.get('type') in PL_TYPES else 'per_item'
     rounding = body.get('rounding') if body.get('rounding') in PL_ROUNDING else 'none'
     items = []
-    raw_items = body['items'] if isinstance(body.get('items'), list) else []
+    raw_items = cap_list(body['items'], 'price list items', 5000) if isinstance(body.get('items'), list) else []
     for x in raw_items:
         x = x if isinstance(x, dict) else {}
         item_id = nz(x.get('item_id'))

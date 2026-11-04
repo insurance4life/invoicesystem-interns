@@ -13,7 +13,7 @@ from books.core.router import bad, not_found, forbidden, HttpError
 from books.core.util import audit, round2, assert_unlocked, clean_body
 from books.core.auth import perm, can
 from books.core.jsutil import jsstr, truthy, to_int, now_iso, today
-from books.core.ledger import post, unpost, sys_account, account_class
+from books.core.ledger import post, unpost, sys_account, account_class, account_in_use
 from books.core.payments import save_payment
 
 BANK_TYPES = ['bank', 'credit_card', 'cash', 'payment_clearing']
@@ -1057,12 +1057,7 @@ def routes(r):
         if truthy(a['is_system']):
             raise bad('System accounts cannot be deleted')
         i = a['id']
-        used = get("""SELECT (SELECT COUNT(*) FROM ledger WHERE account_id = ?) + (SELECT COUNT(*) FROM bank_statement_lines WHERE account_id = ?)
-          + (SELECT COUNT(*) FROM bank_txns WHERE account_id = ? OR offset_account_id = ? OR to_account_id = ?)
-          + (SELECT COUNT(*) FROM payments WHERE account_id = ?) + (SELECT COUNT(*) FROM expenses WHERE paid_through_id = ? OR account_id = ?)
-          + (SELECT COUNT(*) FROM documents WHERE account_id = ?) + (SELECT COUNT(*) FROM document_lines WHERE account_id = ?)
-          + (SELECT COUNT(*) FROM refunds WHERE account_id = ?) + (SELECT COUNT(*) FROM reconciliations WHERE account_id = ?)
-          + (SELECT COUNT(*) FROM accounts WHERE parent_id = ? AND org_id = ?) AS n""", i, i, i, i, i, i, i, i, i, i, i, i, i, req.org['id'])['n']
+        used = account_in_use(req.org['id'], i)
         if used:
             raise bad('This account has transactions. Mark it inactive instead.')
         run('DELETE FROM bank_rules WHERE account_id = ? AND org_id = ?', i, req.org['id'])
@@ -1240,7 +1235,9 @@ def routes(r):
         res = {'ok': 0, 'errors': []}
         if ids is None:
             raise TypeError('ids is not iterable')
-        if isinstance(ids, list) and len(ids) > MAX_BULK:
+        if not isinstance(ids, list):  # the cap must hold for whatever is iterated, not only for lists
+            raise bad('ids must be a list')
+        if len(ids) > MAX_BULK:
             raise bad(f'Categorize at most {MAX_BULK} lines at a time')
         for i in ids:
             try:

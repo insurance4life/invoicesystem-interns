@@ -10,7 +10,7 @@ import re
 from django.http import HttpResponse
 
 from books.core.db import all, get, run, insert, update, tx, parse_json
-from books.core.router import bad, not_found, forbidden, json_response
+from books.core.router import bad, not_found, forbidden, json_response, API_LOCK
 from books.core.util import audit, today, token, org_settings, round2, assert_unlocked
 from books.core.auth import perm, can, MODULES, ACTIONS, hash_password
 from books.core.jsutil import jsstr, now_iso, truthy
@@ -546,6 +546,13 @@ def routes(r):  # noqa: C901
             raise bad('Choose a role for this user')
         assert_can_grant(req, role_perms(role))
         name = sstr(bget(b, 'name')) or email.split('@')[0]
+        # Self-locking route (router.SELF_LOCKING): the slow password hash runs before API_LOCK is taken.
+        temp = token(9)
+        temp_hash = hash_password(temp)
+        with API_LOCK:
+            return _invite_locked(req, email, role, name, temp, temp_hash)
+
+    def _invite_locked(req, email, role, name, temp, temp_hash):
         check_send_quota(req.org, email)  # before any account is created, not after
 
         def _do():
@@ -565,8 +572,7 @@ def routes(r):  # noqa: C901
                 else:
                     insert('org_users', {'org_id': req.org['id'], 'user_id': existing['id'], 'role_id': role['id'], 'status': 'invited'})
                 return {'user': existing, 'temp_password': None}
-            temp = token(9)
-            uid = insert('users', {'name': name, 'email': email, 'password_hash': hash_password(temp)})
+            uid = insert('users', {'name': name, 'email': email, 'password_hash': temp_hash})
             insert('org_users', {'org_id': req.org['id'], 'user_id': uid, 'role_id': role['id'], 'status': 'active'})
             return {'user': {'id': uid, 'name': name}, 'temp_password': temp}
         result = tx(_do)
@@ -899,7 +905,7 @@ def routes(r):  # noqa: C901
     r.delete('/custom-fields/:id', perm('settings', 'delete'), delete_cf)
 
     # ---------- opening balances ----------
-    r.get('/opening-balances', perm('settings', 'view'), lambda req: opening_balances(req.org))
+    r.get('/opening-balances', perm('accountant', 'view'), lambda req: opening_balances(req.org))
 
     def put_ob(req):
         b = _body(req)
@@ -939,7 +945,7 @@ def routes(r):  # noqa: C901
         post(org_id, 'opening_balance', org_id, date=date, lines=lines)
         audit(req, 'opening_balance', org_id, 'updated', f'{date}, {len(lines)} line(s)')
         return opening_balances(req.org)
-    r.put('/opening-balances', perm('settings', 'edit'), put_ob)
+    r.put('/opening-balances', perm('accountant', 'edit'), put_ob)  # posts arbitrary ledger lines, like a journal
 
     # ---------- data backup & export ----------
     def backup(req):

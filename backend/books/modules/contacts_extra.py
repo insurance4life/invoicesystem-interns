@@ -128,9 +128,19 @@ def _statement_email(req):
 
 
 # ---------------------------------------------------------------- contact import helpers
-def _used_count(cid):
-    return get('SELECT (SELECT COUNT(*) FROM documents WHERE contact_id = ?) + (SELECT COUNT(*) FROM payments WHERE contact_id = ?) '
-               '+ (SELECT COUNT(*) FROM expenses WHERE vendor_id = ? OR customer_id = ?) n', cid, cid, cid, cid)['n']
+def _used_count(cid, org_id):
+    """Every record that refers to the contact. Contact ids are plain integers, so whatever is not counted here would be
+    left pointing at a deleted contact (journal and bank postings, payment links, projects, line-level customers)."""
+    return get('''SELECT (SELECT COUNT(*) FROM documents WHERE contact_id = ? AND org_id = ?)
+                    + (SELECT COUNT(*) FROM payments WHERE contact_id = ? AND org_id = ?)
+                    + (SELECT COUNT(*) FROM expenses WHERE (vendor_id = ? OR customer_id = ?) AND org_id = ?)
+                    + (SELECT COUNT(*) FROM ledger WHERE contact_id = ? AND org_id = ? AND src_type != 'contact_opening')
+                    + (SELECT COUNT(*) FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE jl.contact_id = ? AND j.org_id = ?)
+                    + (SELECT COUNT(*) FROM bank_txns WHERE contact_id = ? AND org_id = ?)
+                    + (SELECT COUNT(*) FROM payment_links WHERE contact_id = ? AND org_id = ?)
+                    + (SELECT COUNT(*) FROM projects WHERE customer_id = ? AND org_id = ?)
+                    + (SELECT COUNT(*) FROM document_lines dl JOIN documents d ON d.id = dl.document_id WHERE dl.customer_id = ? AND d.org_id = ?) AS n''',
+               cid, org_id, cid, org_id, cid, cid, org_id, cid, org_id, cid, org_id, cid, org_id, cid, org_id, cid, org_id, cid, org_id)['n']
 
 
 def _post_opening(org, cid, typ, amount, date):
@@ -236,6 +246,20 @@ def _import_contacts(req):
 
 
 # ---------------------------------------------------------------- merge / bulk
+def _assert_merge_unlocked(org, cid):
+    oid = org['id']
+    for r in all('SELECT doc_type, MIN(date) AS d FROM documents WHERE contact_id = ? AND org_id = ? GROUP BY doc_type', cid, oid):
+        assert_unlocked(org, r['d'], r['doc_type'])
+    for r in all('SELECT type, MIN(date) AS d FROM payments WHERE contact_id = ? AND org_id = ? GROUP BY type', cid, oid):
+        assert_unlocked(org, r['d'], 'payment_received' if r['type'] == 'received' else 'payment_made')
+    for sql, args, kind in [('SELECT MIN(date) AS d FROM expenses WHERE (vendor_id = ? OR customer_id = ?) AND org_id = ?', (cid, cid, oid), 'expense'),
+                            ('SELECT MIN(date) AS d FROM bank_txns WHERE contact_id = ? AND org_id = ?', (cid, oid), 'bank'),
+                            ('SELECT MIN(date) AS d FROM ledger WHERE contact_id = ? AND org_id = ?', (cid, oid), 'journal')]:
+        d = get(sql, *args)['d']
+        if d:
+            assert_unlocked(org, d, kind)
+
+
 def _merge(req):
     from books.modules.contacts import load_contact  # noqa: PLC0415
 
@@ -264,11 +288,13 @@ def _merge(req):
                 raise not_found('Contact')
             if s['type'] != target['type']:
                 raise bad('Only contacts of the same type can be merged')
-            # merging re-attributes every posting of the source, so none of them may sit in a locked period
-            first = get('SELECT MIN(date) AS d FROM ledger WHERE contact_id = ? AND org_id = ?', s['id'], org['id'])['d']
-            if first:
-                assert_unlocked(org, first, 'journal')
+            # Merging re-attributes every record of the source, so none may sit in a locked period, checked against the
+            # lock area of each record kind (sales, purchases, banking), not just the accountant lock.
+            _assert_merge_unlocked(org, s['id'])
+            moved_docs = all('SELECT id FROM documents WHERE contact_id = ? AND org_id = ?', s['id'], org['id'])
             run('UPDATE documents SET contact_id = ? WHERE contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
+            for d in moved_docs:  # share links were issued to the source contact, as on a normal contact change
+                update('documents', d['id'], {'share_token': token(18)})
             run('UPDATE payments SET contact_id = ? WHERE contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
             run('UPDATE expenses SET vendor_id = ? WHERE vendor_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
             run('UPDATE expenses SET customer_id = ? WHERE customer_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
@@ -276,12 +302,18 @@ def _merge(req):
             run("UPDATE ledger SET src_type = 'contact_opening_merged' WHERE src_type = 'contact_opening' AND src_id = ? AND org_id = ?",
                 s['id'], org['id'])
             run('UPDATE ledger SET contact_id = ? WHERE contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
-            run('UPDATE journal_lines SET contact_id = ? WHERE contact_id = ?', target['id'], s['id'])
+            run('UPDATE journal_lines SET contact_id = ? WHERE contact_id = ? AND journal_id IN (SELECT id FROM journals WHERE org_id = ?)',
+                target['id'], s['id'], org['id'])
+            run('UPDATE bank_txns SET contact_id = ? WHERE contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
+            run('UPDATE payment_links SET contact_id = ? WHERE contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
+            run('UPDATE projects SET customer_id = ? WHERE customer_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
+            run('UPDATE document_lines SET customer_id = ? WHERE customer_id = ? AND document_id IN (SELECT id FROM documents WHERE org_id = ?)',
+                target['id'], s['id'], org['id'])
             run("UPDATE comments SET entity_id = ? WHERE entity_type = 'contact' AND entity_id = ? AND org_id = ?",
                 target['id'], s['id'], org['id'])
             run("UPDATE activity SET entity_id = ? WHERE entity_type = 'contact' AND entity_id = ? AND org_id = ?",
                 target['id'], s['id'], org['id'])
-            run('UPDATE contacts SET linked_contact_id = ? WHERE linked_contact_id = ?', target['id'], s['id'])
+            run('UPDATE contacts SET linked_contact_id = ? WHERE linked_contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
             run('DELETE FROM contacts WHERE id = ?', s['id'])
             audit(req, 'contact', target['id'], 'merged', s['display_name'])
         return load_contact(org['id'], target['id'])
@@ -329,7 +361,7 @@ def _bulk(req):
                         raise bad('Nothing to update')
                     update('contacts', cid, o)
                 else:
-                    if _used_count(sql_num(cid)):
+                    if _used_count(sql_num(cid), req.org['id']):
                         raise bad('This contact has transactions. Mark it as inactive instead.')
                     unpost_opening(req.org, 'contact_opening', cid)
                     run('DELETE FROM contacts WHERE id = ?', cid)
@@ -432,7 +464,7 @@ def _items_import(req):
 def routes(r):
     # ---------- statements ----------
     r.get('/contacts/:id/statement', perm('contacts', 'view'), _statement)
-    r.post('/contacts/:id/statement/email', perm('contacts', 'view'), _statement_email)
+    r.post('/contacts/:id/statement/email', perm('contacts', 'edit'), _statement_email)  # sends mail: not a read
     # ---------- import ----------
     r.post('/contacts/import', perm('contacts', 'create'), _import_contacts)
     # ---------- merge ----------

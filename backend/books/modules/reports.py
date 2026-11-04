@@ -759,21 +759,21 @@ def unused_credits_as_of(org_id, side, as_of):
             out[cid] = r2((out.get(cid) or 0) + v)
 
     for n in all(f'''SELECT d.contact_id, {DOC_FX} AS fx, d.total
-      - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE source_type = d.doc_type AND source_id = d.id AND date <= ?), 0)
-      - COALESCE((SELECT SUM(amount) FROM refunds WHERE source_type = d.doc_type AND source_id = d.id AND date <= ?), 0) AS bal
+      - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE org_id = d.org_id AND source_type = d.doc_type AND source_id = d.id AND date <= ?), 0)
+      - COALESCE((SELECT SUM(amount) FROM refunds WHERE org_id = d.org_id AND source_type = d.doc_type AND source_id = d.id AND date <= ?), 0) AS bal
     FROM documents d WHERE d.org_id = ? AND d.doc_type = ? AND d.status IN {LIVE} AND d.date <= ? ORDER BY d.date COLLATE "C", d.id''',
                  as_of, as_of, org_id, cred_type, as_of):
         add(n['contact_id'], _n(n['bal']) * _n(n['fx']))
     for p in all('''SELECT p.contact_id, COALESCE(p.exchange_rate,1) AS fx, p.amount + COALESCE(p.tds_amount,0)
       - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id = p.id), 0)
-      - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE source_type = 'payment' AND source_id = p.id AND date <= ?), 0)
-      - COALESCE((SELECT SUM(amount) FROM refunds WHERE source_type = 'payment' AND source_id = p.id AND date <= ?), 0) AS bal
+      - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE org_id = p.org_id AND source_type = 'payment' AND source_id = p.id AND date <= ?), 0)
+      - COALESCE((SELECT SUM(amount) FROM refunds WHERE org_id = p.org_id AND source_type = 'payment' AND source_id = p.id AND date <= ?), 0) AS bal
     FROM payments p WHERE p.org_id = ? AND p.type = ? AND p.date <= ? ORDER BY p.id''', as_of, as_of, org_id, pay_type, as_of):
         add(p['contact_id'], _n(p['bal']) * _n(p['fx']))
     if side == 'sales':
         for rt in all(f'''SELECT d.contact_id, {DOC_FX} AS fx,
         COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id AND p.date <= ?), 0)
-        - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE source_type = 'retainer' AND source_id = d.id AND date <= ?), 0) AS bal
+        - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE org_id = d.org_id AND source_type = 'retainer' AND source_id = d.id AND date <= ?), 0) AS bal
       FROM documents d WHERE d.org_id = ? AND d.doc_type = 'retainer' AND d.date <= ? ORDER BY d.date COLLATE "C", d.id''', as_of, as_of, org_id, as_of):
             add(rt['contact_id'], _n(rt['bal']) * _n(rt['fx']))
     return out
@@ -979,8 +979,8 @@ def payments_report(req, kind):
         '''SELECT p.id AS payment_id, p.type AS payment_type, p.number, p.date, p.reference, p.mode, p.contact_id, c.display_name AS contact_name,
       a.name AS account_name, p.account_id, p.amount * COALESCE(p.exchange_rate,1) AS amount, p.currency,
       (p.amount + COALESCE(p.tds_amount,0) - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id = p.id),0)
-        - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE source_type = 'payment' AND source_id = p.id),0)
-        - COALESCE((SELECT SUM(amount) FROM refunds WHERE source_type = 'payment' AND source_id = p.id),0)) * COALESCE(p.exchange_rate,1) AS unused,
+        - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE org_id = p.org_id AND source_type = 'payment' AND source_id = p.id),0)
+        - COALESCE((SELECT SUM(amount) FROM refunds WHERE org_id = p.org_id AND source_type = 'payment' AND source_id = p.id),0)) * COALESCE(p.exchange_rate,1) AS unused,
       (SELECT string_agg(d.number, ', ' ORDER BY pa.id) FROM payment_allocations pa JOIN documents d ON d.id = pa.document_id WHERE pa.payment_id = p.id) AS applied_to
     FROM payments p LEFT JOIN contacts c ON c.id = p.contact_id LEFT JOIN accounts a ON a.id = p.account_id
     WHERE p.org_id = ? AND p.type = ? AND p.date >= ? AND p.date <= ? ORDER BY p.date COLLATE "C" DESC, p.id DESC''', p['org']['id'], kind, p['from'], p['to'])]
@@ -1110,7 +1110,7 @@ def rpt_inventory_summary(req):
       COALESCE(SUM(CASE WHEN s.date >= ? AND s.date <= ? AND s.qty > 0 THEN s.qty END), 0) AS qty_in,
       COALESCE(SUM(CASE WHEN s.date >= ? AND s.date <= ? AND s.qty < 0 THEN -s.qty END), 0) AS qty_out,
       COALESCE(SUM(CASE WHEN s.date <= ? THEN s.qty END), 0) AS closing,
-      (SELECT COALESCE(SUM(l.quantity),0) FROM document_lines l JOIN documents d ON d.id = l.document_id WHERE l.item_id = i.id AND d.doc_type = 'salesorder' AND d.status = 'open') AS committed
+      (SELECT COALESCE(SUM(l.quantity),0) FROM document_lines l JOIN documents d ON d.id = l.document_id WHERE l.item_id = i.id AND d.org_id = i.org_id AND d.doc_type = 'salesorder' AND d.status = 'open') AS committed
     FROM items i LEFT JOIN stock_moves s ON s.item_id = i.id
     WHERE i.org_id = ? AND i.track_inventory = 1 GROUP BY i.id ORDER BY {NOCASE_NAME}, i.id''', p['from'], p['from'], p['to'], p['from'], p['to'], p['to'], p['org']['id'])]
     return {**head('Inventory Summary', p),

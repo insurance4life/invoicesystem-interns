@@ -321,7 +321,7 @@ class DocumentLine(models.Model):
 
     class Meta:
         db_table = 'document_lines'
-        indexes = [models.Index(fields=['document'], name='ix_lines_doc')]
+        indexes = [models.Index(fields=['document'], name='ix_lines_doc'), models.Index(fields=['item_id'], name='ix_lines_item')]
 
 
 class Payment(models.Model):
@@ -366,6 +366,7 @@ class CreditApplication(models.Model):
 
     class Meta:
         db_table = 'credit_applications'
+        indexes = [models.Index(fields=['source_type', 'source_id'], name='ix_credit_app_source')]
 
 
 class Refund(models.Model):
@@ -381,6 +382,7 @@ class Refund(models.Model):
 
     class Meta:
         db_table = 'refunds'
+        indexes = [models.Index(fields=['source_type', 'source_id'], name='ix_refund_source')]
 
 
 class Expense(models.Model):
@@ -615,7 +617,8 @@ class BankStatementLine(models.Model):
     class Meta:
         db_table = 'bank_statement_lines'
         indexes = [models.Index(fields=['account_id', 'status', 'date'], name='ix_bsl_account'),
-                   models.Index(fields=['matched_type', 'matched_id'], name='ix_bsl_match')]
+                   models.Index(fields=['matched_type', 'matched_id'], name='ix_bsl_match'),
+                   models.Index(fields=['account_id', 'date'], name='ix_bsl_account_date')]  # import duplicate check
 
 
 class BankTxn(models.Model):

@@ -4,7 +4,7 @@ import os
 from books.core.db import get, all, insert, update, run
 from books.core.router import HttpError, bad, API_LOCK, _throttle
 from books.core.auth import hash_password, verify_password, user_token, require_user
-from books.core.orgs import create_org, check_sizes as check_org_sizes
+from books.core.orgs import create_org, delete_org, check_sizes as check_org_sizes
 
 
 def _signup(req):
@@ -116,7 +116,7 @@ def _delete_me(req):
     for o in owned:
         admins = get("SELECT COUNT(*) n FROM org_users ou JOIN roles r ON r.id = ou.role_id WHERE ou.org_id = ? AND r.name = 'Admin' AND ou.status = 'active'", o['org_id'])['n']
         if admins <= 1:
-            run('DELETE FROM orgs WHERE id = ?', o['org_id'])
+            delete_org(o['org_id'])
     run('DELETE FROM users WHERE id = ?', req.user['id'])
     return {'ok': True}
 

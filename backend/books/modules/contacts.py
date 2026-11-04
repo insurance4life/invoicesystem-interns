@@ -145,9 +145,8 @@ def routes(r):
 
     def delete(req):
         c = load_contact(req.org['id'], to_int(req.params['id']))
-        used = get('''SELECT (SELECT COUNT(*) FROM documents WHERE contact_id = ?) + (SELECT COUNT(*) FROM payments WHERE contact_id = ?)
-                      + (SELECT COUNT(*) FROM expenses WHERE vendor_id = ? OR customer_id = ?) n''', c['id'], c['id'], c['id'], c['id'])['n']
-        if used:
+        from books.modules.contacts_extra import _used_count  # noqa: PLC0415 (contacts_extra imports this module)
+        if _used_count(c['id'], req.org['id']):
             raise bad('This contact has transactions. Mark it as inactive instead.')
         unpost_opening(req.org, 'contact_opening', c['id'])
         run('DELETE FROM contacts WHERE id = ?', c['id'])
@@ -156,8 +155,12 @@ def routes(r):
     r.delete('/contacts/:id', perm('contacts', 'delete'), delete)
 
     def _money_view(req):
-        # credits and open documents feed the payment and credit forms, so sales or purchases view also qualifies
-        if not (can(req, 'contacts', 'view') or can(req, 'sales', 'view') or can(req, 'purchases', 'view')):
+        # Credits and open documents feed the payment and credit forms, so the view right of the contact's own side
+        # (customer -> sales, vendor -> purchases) also qualifies; the other side's right does not.
+        if can(req, 'contacts', 'view'):
+            return
+        c = get('SELECT type FROM contacts WHERE id = ? AND org_id = ?', to_int(req.params['id']), req.org['id'])
+        if not c or not can(req, 'sales' if c['type'] == 'customer' else 'purchases', 'view'):
             raise forbidden()
 
     r.get('/contacts/:id/credits', _money_view, lambda req: available_credits(req.org['id'], to_int(req.params['id'])))

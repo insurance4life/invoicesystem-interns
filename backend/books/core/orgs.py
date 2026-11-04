@@ -1,7 +1,8 @@
 """Organization bootstrap: roles, currencies, payment terms, taxes and the chart of accounts (port of orgs.js)."""
 import json
+import shutil
 
-from books.core.db import insert, tx
+from books.core.db import insert, run, tx
 from books.core.router import bad
 from books.core.ledger import create_default_accounts
 from books.core.auth import ADMIN_PERMS, STAFF_PERMS, STAFF_LIMITED_PERMS, TIMESHEET_PERMS, ACCOUNTANT_PERMS
@@ -32,6 +33,14 @@ def check_sizes(data):
             raise bad(f'{k.replace("_", " ").capitalize()} must be at most {n} characters')
     if len(_j(data.get('address') or {})) > 2000:
         raise bad('Address is too long')
+
+
+def delete_org(org_id):
+    """Delete the org row (child rows cascade) and its uploaded files. Without the second step the files stayed on
+    disk while their rows, and so the org's storage quota, disappeared."""
+    from django.conf import settings  # noqa: PLC0415
+    run('DELETE FROM orgs WHERE id = ?', org_id)
+    shutil.rmtree(settings.DATA_DIR / 'uploads' / str(int(org_id)), ignore_errors=True)
 
 
 def create_org(user_id, data):

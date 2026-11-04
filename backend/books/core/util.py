@@ -89,13 +89,19 @@ def org_settings(org):
     return merged
 
 
+SETTINGS_MAX_BYTES = 64 * 1024
+
+
 def save_org_settings(org_id, patch):
     org = get('SELECT settings FROM orgs WHERE id = ?', org_id)
     cur = _loads(org['settings'])
     nxt = dict(cur)
     for k, v in (patch or {}).items():
         nxt[k] = {**(cur.get(k) if isinstance(cur.get(k), dict) else {}), **v} if isinstance(v, dict) else v
-    update('orgs', org_id, {'settings': json.dumps(nxt, separators=(',', ':'), ensure_ascii=False)})
+    blob = json.dumps(nxt, separators=(',', ':'), ensure_ascii=False)
+    if len(blob) > SETTINGS_MAX_BYTES:  # parsed on every request in the org, so it must stay small
+        raise bad('Organization settings are too large')
+    update('orgs', org_id, {'settings': blob})
     return org_settings({'settings': nxt})
 
 
@@ -196,6 +202,24 @@ def assert_owned(org_id, table, ids, label):
     found = db_all(f"SELECT id FROM {table} WHERE org_id = ? AND id IN ({','.join('?' for _ in want)})", org_id, *want)
     if len(found) != len(want):
         raise bad(f'Invalid {label}')
+
+
+MAX_COLLECTION = 500  # lines, tasks or users one request may carry; each costs queries while API_LOCK is held
+
+
+def cap_list(value, label, limit=MAX_COLLECTION):
+    """Raise 400 when a request list is longer than limit (the 26 MB body cap alone allows millions of rows)."""
+    if isinstance(value, (list, dict)) and len(value) > limit:
+        raise bad(f'At most {limit} {label} are allowed')
+    return value
+
+
+def like_pattern(text, max_len=100):
+    """A '%text%' ILIKE pattern with the user's % and _ taken literally (PostgreSQL's default escape is backslash)
+    and a bounded length, since every searched row is compared against the whole pattern while API_LOCK is held."""
+    s = str(text or '').strip()[:max_len]
+    s = s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return f'%{s}%' if s else None
 
 
 def clean_body(body, fields):

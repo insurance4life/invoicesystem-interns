@@ -3,7 +3,8 @@ import json
 
 from books.core.db import all, get, insert, update, run, parse_json
 from books.core.router import bad, forbidden
-from books.core.util import org_settings, save_org_settings, clean_body, audit
+from books.core.util import org_settings, save_org_settings, clean_body, audit, like_pattern, canon_date
+from books.core.orgs import check_sizes as check_org_sizes, delete_org as remove_org
 from books.core.auth import perm, can, MODULES
 from books.core.entities import assert_entity_access, entity_module
 from books.core.documents import DOC_TYPES
@@ -71,6 +72,13 @@ def routes(r):
             raise bad('Organization name is required')
         if isinstance(fields.get('address'), dict):
             fields['address'] = json.dumps(fields['address'], separators=(',', ':'), ensure_ascii=False)
+        # the org row is read on every request in this org, so its free-text and image fields are bounded
+        for k, n in (('logo', 400_000), ('address', 2000), ('website', 500)):
+            if fields.get(k) is not None and len(str(fields[k])) > n:
+                raise bad(f'{k.capitalize()} is too large')
+        if fields.get('lock_date'):
+            fields['lock_date'] = canon_date(fields['lock_date'], 'lock date')
+        check_org_sizes(fields)
         if fields.get('currency') and fields['currency'] != req.org['currency']:
             if get('SELECT COUNT(*) n FROM ledger WHERE org_id = ?', req.org['id'])['n']:
                 raise bad('Base currency cannot be changed after transactions exist')
@@ -97,7 +105,7 @@ def routes(r):
     def delete_org(req):
         if req.role != 'Admin':
             raise bad('Only an admin can delete the organization')
-        run('DELETE FROM orgs WHERE id = ?', req.org['id'])
+        remove_org(req.org['id'])
         return {'ok': True}
     r.delete('/org', perm('settings', 'delete'), delete_org)
 
@@ -111,8 +119,8 @@ def routes(r):
 
     # ---------- global search ----------
     def search(req):
-        q = f"%{(req.query.get('q') or '').strip()}%"
-        if q == '%%':
+        q = like_pattern(req.query.get('q'))
+        if not q:
             return {'results': []}
         oid = req.org['id']
         out = []
@@ -124,18 +132,21 @@ def routes(r):
             for i in all('SELECT id, name, sku FROM items WHERE org_id = ? AND (name ILIKE ? OR sku ILIKE ?) ORDER BY id LIMIT 8', oid, q, q):
                 out.append({'kind': 'item', 'id': i['id'], 'title': i['name'], 'subtitle': i['sku'], 'url': f"/items/{i['id']}"})
         from books.core.jsutil import jsstr  # noqa: PLC0415
-        for d in all('''SELECT d.id, d.doc_type, d.number, d.total, c.display_name FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id
-                        WHERE d.org_id = ? AND (d.number ILIKE ? OR d.reference ILIKE ? OR c.display_name ILIKE ?) ORDER BY d.date DESC, d.id LIMIT 12''', oid, q, q, q):
-            side = 'sales' if (DOC_TYPES.get(d['doc_type']) or {}).get('side') == 'sales' else 'purchases'
-            if not can(req, side, 'view'):
-                continue
+        # only search the sides the member can view, instead of scanning everything and discarding rows afterwards
+        types = [t for t, cfg in DOC_TYPES.items() if can(req, 'sales' if cfg.get('side') == 'sales' else 'purchases', 'view')]
+        docs = all(f'''SELECT d.id, d.doc_type, d.number, d.total, c.display_name FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id
+                       WHERE d.org_id = ? AND d.doc_type IN ({','.join('?' for _ in types)})
+                       AND (d.number ILIKE ? OR d.reference ILIKE ? OR c.display_name ILIKE ?) ORDER BY d.date DESC, d.id LIMIT 12''',
+                   oid, *types, q, q, q) if types else []
+        for d in docs:
             out.append({'kind': d['doc_type'], 'id': d['id'], 'title': d['number'],
                         'subtitle': f"{(DOC_TYPES.get(d['doc_type']) or {}).get('label')} · {d['display_name'] or ''} · {jsstr(d['total'])}",
                         'url': f"/{SLUGS.get(d['doc_type'])}/{d['id']}"})
-        for p in all('''SELECT p.id, p.type, p.number, p.amount, c.display_name FROM payments p LEFT JOIN contacts c ON c.id = p.contact_id
-                        WHERE p.org_id = ? AND (p.number ILIKE ? OR p.reference ILIKE ?) ORDER BY p.id LIMIT 6''', oid, q, q):
-            if not can(req, 'sales' if p['type'] == 'received' else 'purchases', 'view'):
-                continue
+        kinds = [k for k, m in (('received', 'sales'), ('made', 'purchases')) if can(req, m, 'view')]
+        pays = all(f'''SELECT p.id, p.type, p.number, p.amount, c.display_name FROM payments p LEFT JOIN contacts c ON c.id = p.contact_id
+                       WHERE p.org_id = ? AND p.type IN ({','.join('?' for _ in kinds)}) AND (p.number ILIKE ? OR p.reference ILIKE ?)
+                       ORDER BY p.id LIMIT 6''', oid, *kinds, q, q) if kinds else []
+        for p in pays:
             out.append({'kind': f"payment_{p['type']}", 'id': p['id'], 'title': p['number'], 'subtitle': f"{p['display_name']} · {jsstr(p['amount'])}",
                         'url': f"/payments-{p['type']}/{p['id']}"})
         return {'results': out}

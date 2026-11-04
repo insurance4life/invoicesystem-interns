@@ -2,7 +2,7 @@
 (port of modules/budgets.js)."""
 from books.core.db import all, get, insert, update, run, parse_json
 from books.core.router import bad, not_found
-from books.core.util import audit
+from books.core.util import audit, cap_list
 from books.core.auth import perm
 from books.core.ledger import account_class
 from books.core.calc import round2, sum_js
@@ -34,6 +34,7 @@ def budget_periods(fiscal_year, period, start_month=4):
 def _clean_lines(org_id, raw, count):
     if raw is None:
         return {}
+    cap_list(raw, 'budget lines', 5000)
     if not isinstance(raw, dict):
         raise bad('Budget lines must be keyed by account')
     out = {}

@@ -6,7 +6,7 @@ import re
 
 from books.core.db import all, get, run, insert, update, tx
 from books.core.router import bad, not_found, forbidden
-from books.core.util import audit, num, org_settings
+from books.core.util import audit, num, org_settings, cap_list
 from books.core.calc import round2
 from books.core.auth import perm, can
 from books.core.documents import save_document
@@ -117,6 +117,7 @@ def load_project(org_id, id_):
 def _norm_users(org_id, lst):
     if not isinstance(lst, list):
         return []
+    cap_list(lst, 'project users', 200)
     seen = set()
     out = []
     for u in lst:
@@ -186,6 +187,7 @@ def _sync_tasks(org_id, project_id, lst, may_delete=True):
     """Replace the task list: matching ids update, new rows insert, missing rows are removed. Removing a task is the
     same effect as DELETE /projects/:id/tasks/:tid, so it needs projects:delete (may_delete)."""
     keep = set()
+    cap_list(lst, 'tasks', 200)
     for t in lst:
         fields = _clean_task(t)
         if not fields['name']:

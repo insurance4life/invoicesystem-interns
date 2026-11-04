@@ -4,7 +4,7 @@ import os
 
 from books.core.db import all, get, update, parse_json
 from books.core.router import bad, forbidden
-from books.core.util import audit, today, org_settings, peek_number
+from books.core.util import audit, today, org_settings, peek_number, like_pattern
 from books.core.auth import can
 from books.core.jsutil import to_int, to_fixed2, jsnum
 from books.core.documents import (DOC_TYPES, type_cfg, load_doc, doc_relations, save_document, doc_action, delete_document,
@@ -42,7 +42,8 @@ def routes(r):
         _guard(req, t, 'view')
         q = req.query
         status, search = q.get('status'), q.get('q')
-        page, per_page = to_int(q.get('page'), 1) or 1, to_int(q.get('per_page'), 100) or 100
+        page = max(to_int(q.get('page'), 1) or 1, 1)
+        per_page = min(max(to_int(q.get('per_page'), 100) or 100, 1), 500)
         sort, direction = q.get('sort') or 'date', q.get('dir') or 'desc'
         where = ['d.org_id = ?', 'd.doc_type = ?']
         p = [req.org['id'], t]
@@ -58,26 +59,36 @@ def routes(r):
         if q.get('to'):
             where.append('d.date <= ?')
             p.append(q['to'])
-        if search:
+        pat = like_pattern(search)
+        if pat:
             where.append('(d.number ILIKE ? OR d.reference ILIKE ? OR c.display_name ILIKE ?)')
-            p += [f'%{search}%'] * 3
+            p += [pat] * 3
         order_col = {'date': 'd.date', 'number': 'd.number', 'total': 'd.total', 'balance': 'd.balance', 'due_date': 'd.due_date',
                      'contact': 'c.display_name'}.get(sort) or 'd.date'
         dir_sql = 'ASC' if direction == 'asc' else 'DESC'
-        rows = all(f'''SELECT d.id, d.doc_type, d.number, d.reference, d.date, d.due_date, d.status, d.total, d.balance, d.currency, d.exchange_rate,
+        filtered = bool(status and status != 'all')
+        sql = f'''SELECT d.id, d.doc_type, d.number, d.reference, d.date, d.due_date, d.status, d.total, d.balance, d.currency, d.exchange_rate,
             d.sent_at, d.contact_id, d.recurrence, d.write_off, d.project_id, c.display_name AS contact_name
           FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id WHERE {' AND '.join(where)}
-          ORDER BY {order_col} {dir_sql} NULLS {'FIRST' if dir_sql == 'ASC' else 'LAST'}, d.id DESC''', *p)
+          ORDER BY {order_col} {dir_sql} NULLS {'FIRST' if dir_sql == 'ASC' else 'LAST'}, d.id DESC'''
+        start = (page - 1) * per_page
+        if not filtered:
+            # no status filter: page in SQL instead of loading every document of the type
+            total = get(f"SELECT COUNT(*) AS n FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id WHERE {' AND '.join(where)}", *p)['n']
+            rows = all(sql + ' LIMIT ? OFFSET ?', *p, per_page, start)
+        else:
+            rows = all(sql, *p)
         for x in rows:
             parse_json(x, ['recurrence'])
             x['display_status'] = display_status(x)
-        if status and status != 'all':
+        if filtered:
+            # display_status (overdue, partially paid) is derived in Python, so status filters still page here
             st = str(status).split(',')
             rows = [x for x in rows if x['display_status'] in st
                     or ('unpaid' in st and x['display_status'] in ('open', 'sent', 'overdue', 'partially_paid'))]
-        total = len(rows)
-        start = (page - 1) * per_page
-        return {'rows': rows[start:start + per_page], 'total': total, 'page': page, 'per_page': per_page}
+            total = len(rows)
+            rows = rows[start:start + per_page]
+        return {'rows': rows, 'total': total, 'page': page, 'per_page': per_page}
     r.get('/documents/:type', list_docs)
 
     r.get('/documents/:type/next-number', lambda req: {'number': peek_number(get('SELECT * FROM orgs WHERE id = ?', req.org['id']), req.params['type'])})
@@ -139,6 +150,7 @@ def routes(r):
     def convert(req):
         t = req.params['type']
         to = req.body.get('to')
+        _guard(req, t, 'view')  # the copy carries the source's lines and notes, so the source must be readable
         _guard(req, to, 'create')
         did = to_int(req.params['id'])
         doc = convert_document(req, t, did, to, req.body)
@@ -149,6 +161,7 @@ def routes(r):
 
     def clone(req):
         t = req.params['type']
+        _guard(req, t, 'view')
         _guard(req, t, 'create')
         s = load_doc(req.org['id'], to_int(req.params['id']))
         if s['doc_type'] != t:

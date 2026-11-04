@@ -103,8 +103,9 @@ def post(org_id, src_type, src_id, date=None, number=None, contact_id=None, line
     """Replace all ledger lines of a source. lines: [{account_id, debit, credit, contact_id?, description?}].
     Zero lines are dropped; the posting must balance. Reconciliation marks survive unchanged lines."""
     def _do():
-        recon = all('SELECT account_id, debit, credit, reconciliation_id FROM ledger WHERE src_type = ? AND src_id = ? AND org_id = ? AND reconciliation_id IS NOT NULL',
+        recon = all('SELECT account_id, debit, credit, date, reconciliation_id FROM ledger WHERE src_type = ? AND src_id = ? AND org_id = ? AND reconciliation_id IS NOT NULL',
                     src_type, src_id, org_id)
+        moved = []  # cleared lines that keep their amounts but would change date
         run('DELETE FROM ledger WHERE src_type = ? AND src_id = ? AND org_id = ?', src_type, src_id, org_id)
         merged = []
         for l in lines:
@@ -130,16 +131,41 @@ def post(org_id, src_type, src_id, date=None, number=None, contact_id=None, line
         for l in merged:
             ri = next((i for i, x in enumerate(recon) if x['account_id'] == int(l['account_id'])
                        and abs(x['debit'] - l['debit']) < 0.005 and abs(x['credit'] - l['credit']) < 0.005), -1)
-            reconciliation_id = recon.pop(ri)['reconciliation_id'] if ri >= 0 else None
+            kept = recon.pop(ri) if ri >= 0 else None
+            reconciliation_id = kept['reconciliation_id'] if kept else None
+            if kept and kept['date'] != date:
+                moved.append(reconciliation_id)
             cid = l.get('contact_id') if l.get('contact_id') is not None else contact_id
             insert('ledger', {
                 'org_id': org_id, 'date': date, 'src_type': src_type, 'src_id': src_id, 'number': number or None,
                 'account_id': l['account_id'], 'contact_id': cid, 'debit': l['debit'], 'credit': l['credit'],
                 'description': l.get('description') or None, 'reconciliation_id': reconciliation_id,
             })
-        _refuse_completed_reconciliation(org_id, [x['reconciliation_id'] for x in recon])  # cleared lines this posting would drop
+        # cleared lines this posting would drop, or move out of the reconciled period
+        _refuse_completed_reconciliation(org_id, [x['reconciliation_id'] for x in recon] + moved)
         return len(merged)
     return tx(_do)
+
+
+def account_in_use(org_id, aid):
+    """Count every row that refers to the account. Account ids are plain integers, so both account delete routes must
+    use this one list; a reference left out here would be orphaned (draft journals, profiles, bank lines...)."""
+    return get('''SELECT (SELECT COUNT(*) FROM ledger WHERE account_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM document_lines dl JOIN documents d ON d.id = dl.document_id WHERE dl.account_id = ? AND d.org_id = ?)
+        + (SELECT COUNT(*) FROM documents WHERE account_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM items WHERE (sales_account_id = ? OR purchase_account_id = ? OR inventory_account_id = ?) AND org_id = ?)
+        + (SELECT COUNT(*) FROM accounts WHERE parent_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM fixed_assets WHERE ? IN (asset_account_id, expense_account_id, accumulated_account_id, disposal_account_id) AND org_id = ?)
+        + (SELECT COUNT(*) FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE jl.account_id = ? AND j.org_id = ?)
+        + (SELECT COUNT(*) FROM payments WHERE account_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM expenses WHERE (account_id = ? OR paid_through_id = ?) AND org_id = ?)
+        + (SELECT COUNT(*) FROM refunds WHERE account_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM bank_statement_lines WHERE account_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM bank_txns WHERE (account_id = ? OR offset_account_id = ? OR to_account_id = ?) AND org_id = ?)
+        + (SELECT COUNT(*) FROM reconciliations WHERE account_id = ? AND org_id = ?)
+        + (SELECT COUNT(*) FROM inventory_adjustments WHERE account_id = ? AND org_id = ?) AS n''',
+               aid, org_id, aid, org_id, aid, org_id, aid, aid, aid, org_id, aid, org_id, aid, org_id, aid, org_id, aid, org_id,
+               aid, aid, org_id, aid, org_id, aid, org_id, aid, aid, aid, org_id, aid, org_id, aid, org_id)['n']
 
 
 def _refuse_completed_reconciliation(org_id, reconciliation_ids):

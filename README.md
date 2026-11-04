@@ -49,6 +49,7 @@ npm test
 | `OPENBOOKS_EMAIL_MAX_RECIPIENTS` | 10 | Addresses allowed in To and Cc of one email |
 | `OPENBOOKS_AUTH_RATE_LIMIT` | 30 | Sign-in, sign-up, profile-password and new-organization requests per client address per minute |
 | `OPENBOOKS_MAX_ORGS_PER_USER` | 10 | Organizations one account may own (be an active Admin of) |
+| `OPENBOOKS_WEBHOOK_CONCURRENCY` | 16 | Workflow webhook calls in flight at once; calls beyond this are logged as skipped |
 | `OPENBOOKS_ORG_STORAGE_MB` | 1024 | File storage per organization |
 | `OPENBOOKS_WEBHOOK_ALLOW_PRIVATE` | off | Set to `1` to let workflow webhooks reach private/loopback addresses (tests, local integrations) |
 | `OPENBOOKS_JOBS` | 1 | Set to 0 to disable the hourly jobs (recurring documents, reminders, depreciation) |

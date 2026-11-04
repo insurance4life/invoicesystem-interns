@@ -2,13 +2,13 @@
 import json
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
-from books.core.router import bad, not_found
+from books.core.router import bad, not_found, HttpError
 from books.core.util import audit, round2, today, assert_unlocked, assert_owned
 from books.core.auth import perm
 from books.core.jsutil import jsnum, jsstr, to_int, truthy
 from books.core.ledger import post, unpost, sys_account, tax_account
 from books.core.calc import compute_document, sum_js
-from books.core.documents import tax_ctx, advance_date, validate_recurrence
+from books.core.documents import tax_ctx, advance_date, validate_recurrence, RECURRING_RUN_LIMIT
 
 FIELDS = ['date', 'account_id', 'paid_through_id', 'amount', 'tax_id', 'tax_inclusive', 'currency', 'exchange_rate', 'vendor_id',
           'customer_id', 'project_id', 'is_billable', 'markup_percent', 'reference', 'notes', 'place_of_supply', 'hsn_sac', 'is_mileage',
@@ -124,19 +124,25 @@ def run_recurring_expenses(org, req):
         except ValueError:
             r = {}
         guard = 0
-        while r.get('status') == 'active' and r.get('next_date') and r['next_date'] <= now and guard < 120:
-            guard += 1
-            if r.get('end_date') and r['next_date'] > r['end_date']:
-                r['status'] = 'expired'
-                break
-            rest = parse_json(dict(p), ['splits'])
-            for k in ('id', 'created_at', 'is_profile', 'recurrence'):
-                rest.pop(k, None)
-            child = save_expense(req, {**rest, 'date': r['next_date'], 'is_profile': 0, 'splits': rest.get('splits') or None, 'invoice_id': None})
-            update('expenses', child['id'], {'profile_id': p['id']})
-            n += 1
-            r = {**r, 'next_date': advance_date(r['next_date'], r.get('frequency'), r.get('every')), 'last_run': now}
+        try:
+            while (r.get('status') == 'active' and r.get('next_date') and r['next_date'] <= now and guard < 120
+                   and n < RECURRING_RUN_LIMIT):
+                guard += 1
+                if r.get('end_date') and r['next_date'] > r['end_date']:
+                    r['status'] = 'expired'
+                    break
+                rest = parse_json(dict(p), ['splits'])
+                for k in ('id', 'created_at', 'is_profile', 'recurrence'):
+                    rest.pop(k, None)
+                child = save_expense(req, {**rest, 'date': r['next_date'], 'is_profile': 0, 'splits': rest.get('splits') or None, 'invoice_id': None})
+                update('expenses', child['id'], {'profile_id': p['id']})
+                n += 1
+                r = {**r, 'next_date': advance_date(r['next_date'], r.get('frequency'), r.get('every')), 'last_run': now}
+        except HttpError as e:  # e.g. a locked period: record it on this profile and carry on with the others
+            r = {**r, 'last_error': e.message, 'last_error_at': now}
         update('expenses', p['id'], {'recurrence': _j(r)})
+        if n >= RECURRING_RUN_LIMIT:
+            break
     return n
 
 

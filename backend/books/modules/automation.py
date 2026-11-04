@@ -15,9 +15,9 @@ import urllib.request
 from django.db import transaction
 
 from books.core.db import all, get, run, insert, update, parse_json
-from books.core.router import bad, not_found
+from books.core.router import bad, not_found, forbidden
 from books.core.util import audit, on_event, token
-from books.core.auth import perm
+from books.core.auth import perm, can
 from books.core.jsutil import now_iso, truthy
 from books.core.documents import DOC_TYPES, load_doc
 from books.core.mailer import send_email, fill_template
@@ -117,6 +117,30 @@ def validate_action(a, module):
     raise bad(f'Unknown action type "{_tpl(typ)}"')
 
 
+MAX_ACTIONS = 10
+MAX_RULES = 100
+# rule module -> modules whose view right the author needs for an email or webhook action to send that record's data out
+_READ_RIGHTS = {'contact': ['contacts'], 'item': ['items'], 'expense': ['purchases'],
+                'payment_received': ['sales'], 'payment_made': ['purchases']}
+
+
+def assert_rule_reader(req, data):
+    """Email and webhook actions copy the triggering record (including document share links) to an address the
+    author chooses, so the author must be able to read that record's module, not just hold settings rights."""
+    if not any(a.get('type') in ('email', 'webhook') for a in data['actions']):
+        return
+    if data['module'] == 'document':
+        need = [_side(data['doc_type'])] if data.get('doc_type') else ['sales', 'purchases']
+    else:
+        need = _READ_RIGHTS.get(data['module'], ['settings'])
+    if any(not can(req, m, 'view') for m in need):  # (all is db.all in this module)
+        raise forbidden('You need view access to these records to send them by email or webhook')
+
+
+def _side(doc_type):
+    return 'sales' if (DOC_TYPES.get(doc_type) or {}).get('side') == 'sales' else 'purchases'
+
+
 def validate_rule(body):
     name = sstr(bget(body, 'name'))
     if not name:
@@ -144,6 +168,8 @@ def validate_rule(body):
         v = bget(c, 'value')
         conditions.append({'field': sstr(bget(c, 'field')), 'op': op, 'value': '' if v is None or v is UNDEF else v})
     acts = bget(body, 'actions')
+    if isinstance(acts, list) and len(acts) > MAX_ACTIONS:
+        raise bad(f'A rule can have at most {MAX_ACTIONS} actions')
     actions = [validate_action(a, module) for a in (acts if isinstance(acts, list) else [])]
     if not actions:
         raise bad('Add at least one action')
@@ -331,6 +357,11 @@ def _fetch(act, payload):
     return status
 
 
+# Process-wide cap on webhook calls in flight; a call that cannot get a slot is logged as skipped, not queued.
+_WEBHOOK_SLOTS = threading.BoundedSemaphore(int(os.environ.get('OPENBOOKS_WEBHOOK_CONCURRENCY') or 16))
+_TOKEN_KEYS = ('share_token', 'portal_token')
+
+
 def _send_webhook(act, payload):
     """fetch() with AbortSignal.timeout(5000): the whole call must finish within 5s."""
     box = {}
@@ -340,6 +371,8 @@ def _send_webhook(act, payload):
             box['status'] = _fetch(act, payload)
         except Exception as e:  # noqa: BLE001
             box['error'] = e
+        finally:
+            _WEBHOOK_SLOTS.release()  # only when the socket work really ends, even after the 5s join gave up
     t = threading.Thread(target=work, daemon=True)
     t.start()
     t.join(5)
@@ -391,8 +424,12 @@ def run_action(org, rule, act, ctx):
                     'event': {'trigger': ctx['trigger'], 'action': ctx['action'], 'module': ctx['module'],
                               'doc_type': _or((rec or {}).get('doc_type'), None), 'at': now_iso()},
                     'org': {'id': org['id'], 'name': org.get('name')},
-                    'entity': {'id': ctx['entity_id'], **(rec or {})},
+                    # capability tokens stay inside OpenBooks; the receiver gets the record data only
+                    'entity': {'id': ctx['entity_id'], **{k: v for k, v in (rec or {}).items() if k not in _TOKEN_KEYS}},
                 }
+                if not _WEBHOOK_SLOTS.acquire(blocking=False):
+                    record('failed', 'Skipped: too many webhook calls in progress')
+                    return
                 log_id = record('pending', f"{act['method']} {act['url']}")
                 threading.Thread(target=_webhook_thread, args=(act, payload, log_id), daemon=True).start()
                 return
@@ -479,6 +516,9 @@ def routes(r):
 
     def post_rule(req):
         data = validate_rule(req.body if isinstance(req.body, dict) else {})
+        assert_rule_reader(req, data)
+        if get('SELECT COUNT(*) AS n FROM workflow_rules WHERE org_id = ?', req.org['id'])['n'] >= MAX_RULES:
+            raise bad(f'An organization can have at most {MAX_RULES} workflow rules')
         rid = insert('workflow_rules', {'org_id': req.org['id'], **data, 'conditions': js_json(data['conditions']), 'actions': js_json(data['actions'])})
         audit(req, 'workflow_rule', rid, 'created', data['name'])
         return rule_row(req.org['id'], rid)
@@ -487,6 +527,7 @@ def routes(r):
     def put_rule(req):
         existing = rule_row(req.org['id'], req.params['id'])
         data = validate_rule({**existing, **(req.body if isinstance(req.body, dict) else {})})
+        assert_rule_reader(req, data)
         update('workflow_rules', existing['id'], {**data, 'conditions': js_json(data['conditions']), 'actions': js_json(data['actions'])})
         audit(req, 'workflow_rule', existing['id'], 'updated', data['name'])
         return rule_row(req.org['id'], existing['id'])
