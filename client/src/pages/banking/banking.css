@@ -1,0 +1,29 @@
+/* Banking area styles (scoped with the bk- prefix). */
+.bk-head { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding: 16px; }
+.bk-big { font-size: 20px; font-weight: 600; margin-top: 4px; }
+.bk-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.bk-card { padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+.bk-card:hover { border-color: var(--primary); }
+.bk-card-bal { font-size: 22px; font-weight: 600; margin: 8px 0; }
+.bk-split { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; align-items: start; }
+.bk-panel { position: sticky; top: 90px; max-height: calc(100vh - 120px); overflow: auto; }
+.bk-panel-foot { border-top: 1px solid var(--line); padding-top: 12px; }
+.bk-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.bk-opt.on { border-color: var(--primary); background: var(--primary-l); }
+.bk-sugg { color: var(--primary); margin-top: 2px; }
+.table tr.bk-sel td { background: var(--primary-l); }
+.table tr.bk-cleared td { background: rgba(24, 131, 87, 0.06); }
+.table tr.bk-dim { cursor: default; }
+.bk-splits { display: flex; flex-direction: column; gap: 8px; background: var(--line2); padding: 10px; border-radius: var(--radius); }
+.bk-cond { display: grid; grid-template-columns: 160px 180px 1fr 32px; gap: 8px; align-items: center; }
+.bk-steps { display: flex; gap: 18px; font-size: 13px; color: var(--muted); }
+.bk-steps .on { color: var(--primary); font-weight: 600; }
+.bk-steps .done { color: var(--green); }
+@media (max-width: 1100px) {
+  .bk-split { grid-template-columns: 1fr; }
+  .bk-panel { position: static; max-height: none; }
+}
+@media (max-width: 760px) {
+  .bk-head { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bk-cond { grid-template-columns: 1fr 1fr; }
+}

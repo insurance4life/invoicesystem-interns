@@ -1,0 +1,19 @@
+# PostgreSQL for OpenBooks: `docker compose up -d`
+services:
+  db:
+    image: postgres:16
+    container_name: openbooks-pg
+    environment:
+      POSTGRES_USER: openbooks
+      POSTGRES_PASSWORD: openbooks
+      POSTGRES_DB: openbooks
+      # C collation = plain byte-order sorting and ASCII-only case folding (what the app expects)
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Loopback only: the dev credentials above must never be reachable from other machines.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - openbooks-pgdata:/var/lib/postgresql/data
+volumes:
+  openbooks-pgdata:
+    name: openbooks-pgdata

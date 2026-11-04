@@ -1,0 +1,17 @@
+{
+  "name": "openbooks",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenBooks - a Zoho Books style accounting web app (Django + PostgreSQL API, React client)",
+  "scripts": {
+    "setup": "python -m pip install -r backend/requirements.txt && npm install --prefix client",
+    "db": "docker compose up -d",
+    "migrate": "python backend/manage.py migrate",
+    "dev": "node scripts/dev.js",
+    "build": "npm run build --prefix client",
+    "start": "python backend/manage.py serve",
+    "seed": "python backend/manage.py seed",
+    "test": "node --test --test-concurrency=1 \"tests/api/*.test.js\""
+  }
+}

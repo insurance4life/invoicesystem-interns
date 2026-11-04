@@ -1,0 +1,13 @@
+node_modules/
+client/dist/
+client/dist-check-*/
+backend/data/
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+*.pem
+*.key
+.secret
+.django_secret
