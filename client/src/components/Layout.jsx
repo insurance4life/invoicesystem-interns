@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../store.jsx';
 import { api } from '../api.js';
 import { Menu, Modal, Button, Field, Input, Select } from './ui.jsx';
-import { House, Package, Landmark, ShoppingCart, Receipt, Timer, NotebookPen, ChartColumn, FolderOpen, CircleCheck, ChevronRight, Settings, Menu as MenuIcon, Plus, BookOpen } from 'lucide-react';
+import { House, Package, Landmark, ShoppingCart, Receipt, Timer, NotebookPen, ChartColumn, FolderOpen, CircleCheck, ChevronRight, Settings, Menu as MenuIcon, Plus } from 'lucide-react';
 import { INDIAN_STATES } from '@shared/calc.js';
 import Assistant from './Assistant.jsx';
 
@@ -147,7 +147,7 @@ export default function Layout({ children }) {
   return (
     <div className="app">
       <aside className={`sidebar ${mobile ? 'mobile-open' : ''}`}>
-        <div className="brand"><span className="brand-logo"><BookOpen size={14} strokeWidth={2} /></span>OpenBooks</div>
+        <div className="brand"><img className="brand-mark" src="/brand/beyondsure-mark.png" alt="" />BeyondBooks</div>
         <nav className="nav">
           {NAV.map((g) => (g.children
             ? <NavGroup key={g.label} g={g} can={can} pathname={pathname} />

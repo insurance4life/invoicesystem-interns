@@ -146,7 +146,7 @@ export default function ImportStatement() {
 
       {step === 2 && (
         <div className="form-section">
-          <p className="muted">Map the columns of <b>{fileName}</b> ({raw.length} rows) to OpenBooks fields. Use either Amount (negative for withdrawals) or separate Deposit / Withdrawal columns.</p>
+          <p className="muted">Map the columns of <b>{fileName}</b> ({raw.length} rows) to BeyondBooks fields. Use either Amount (negative for withdrawals) or separate Deposit / Withdrawal columns.</p>
           <div className="form-grid">
             {FIELDS.map(([f, label, req]) => (
               <Field key={f} label={label} required={req} inline>

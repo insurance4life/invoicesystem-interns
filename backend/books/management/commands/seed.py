@@ -54,7 +54,7 @@ class Command(BaseCommand):
     help = 'Create the demo organization and data'
 
     def add_arguments(self, parser):
-        parser.add_argument('--reset', action='store_true', help='delete all OpenBooks data first')
+        parser.add_argument('--reset', action='store_true', help='delete all BeyondBooks data first')
 
     def handle(self, *args, **opts):  # noqa: C901
         from books.core.db import get  # noqa: PLC0415

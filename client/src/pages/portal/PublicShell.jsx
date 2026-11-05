@@ -5,7 +5,7 @@ export function Shell({ children }) {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', padding: '20px 16px 48px' }}>
       <div style={{ maxWidth: 920, margin: '0 auto' }}>{children}</div>
-      <div className="muted small no-print" style={{ textAlign: 'center', marginTop: 24 }}>Secured link · OpenBooks</div>
+      <div className="muted small no-print" style={{ textAlign: 'center', marginTop: 24 }}>Secured link · BeyondBooks</div>
     </div>
   );
 }

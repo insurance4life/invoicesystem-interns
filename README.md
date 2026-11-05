@@ -1,6 +1,6 @@
-# OpenBooks
+# BeyondBooks
 
-A full-featured, self-hosted accounting web app modelled on **Zoho Books (India edition)**: GST-ready invoicing, purchases, banking, inventory, projects, a double-entry general ledger and 40+ reports, written from scratch.
+BeyondSure's accounting app (internal code name OpenBooks: package, database and `OPENBOOKS_*` settings keep that name). A full-featured, self-hosted accounting web app modelled on **Zoho Books (India edition)**: GST-ready invoicing, purchases, banking, inventory, projects, a double-entry general ledger and 40+ reports, written from scratch.
 
 > Built from a feature study of books.zoho.in (see `PLAN.md`) and the research document *"Zoho Books Feature Reference: Every Module and Function Explained"*.
 

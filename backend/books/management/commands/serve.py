@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):
-    help = 'Serve the OpenBooks API and web app'
+    help = 'Serve the BeyondBooks API and web app'
 
     def add_arguments(self, parser):
         parser.add_argument('--port', type=int, default=int(os.environ.get('PORT') or 4000))
@@ -32,11 +32,11 @@ class Command(BaseCommand):
         except ImportError:
             create_server = None
         if create_server:
-            server = create_server(app, host=opts['host'], port=opts['port'], threads=opts['threads'], ident='OpenBooks',
+            server = create_server(app, host=opts['host'], port=opts['port'], threads=opts['threads'], ident='BeyondBooks',
                                    max_request_body_size=30 * 1024 * 1024, channel_timeout=120)
             port = server.effective_port
             print(f'LISTENING {port}', flush=True)
-            print(f'OpenBooks API listening on http://localhost:{port}', flush=True)
+            print(f'BeyondBooks API listening on http://localhost:{port}', flush=True)
             try:
                 server.run()
             except KeyboardInterrupt:
@@ -50,5 +50,5 @@ class Command(BaseCommand):
             httpd = make_server(opts['host'], opts['port'], app, server_class=TServer)
             port = httpd.server_port
             print(f'LISTENING {port}', flush=True)
-            print(f'OpenBooks API listening on http://localhost:{port} (install waitress for production)', flush=True)
+            print(f'BeyondBooks API listening on http://localhost:{port} (install waitress for production)', flush=True)
             httpd.serve_forever()

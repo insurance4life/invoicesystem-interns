@@ -585,15 +585,15 @@ def routes(r):  # noqa: C901
         org_name = req.org['name']
         stored = None
         if result['temp_password']:
-            intro = f"Hello {who},\n\n{req.user['name']} invited you to {org_name} on OpenBooks as {role['name']}.\n\n"
+            intro = f"Hello {who},\n\n{req.user['name']} invited you to {org_name} on BeyondBooks as {role['name']}.\n\n"
             outro = '\nChange it from your profile after you sign in.\n\nThanks'
             body = f"{intro}Sign in with {email} and this temporary password: {result['temp_password']}{outro}"
             # The outbox is readable by other members, so its copy never carries the password.
             stored = f"{intro}Sign in with {email} and the temporary password shown to the person who invited you.{outro}"
         else:
-            body = (f"Hello {who},\n\n{req.user['name']} invited you to {org_name} on OpenBooks as {role['name']}. "
+            body = (f"Hello {who},\n\n{req.user['name']} invited you to {org_name} on BeyondBooks as {role['name']}. "
                     'Sign in with your existing password and accept the invitation from the organization menu.\n\nThanks')
-        send_email(req.org, email, f'You have been invited to {org_name} on OpenBooks', body,
+        send_email(req.org, email, f'You have been invited to {org_name} on BeyondBooks', body,
                    entity_type='user', entity_id=result['user']['id'], stored_body=stored)
         audit(req, 'user', result['user']['id'], 'invited', f"{email} as {role['name']}")
         member = next((m for m in member_rows(req.org['id']) if m['id'] == result['user']['id']), None) or {}

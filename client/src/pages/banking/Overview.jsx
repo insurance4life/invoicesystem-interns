@@ -34,7 +34,7 @@ export default function Overview() {
     ) },
     { key: 'uncategorized', label: 'Uncategorized', render: (a) => (a.uncategorized ? <Badge status="uncategorized">{a.uncategorized} to review</Badge> : <span className="muted">—</span>) },
     { key: 'statement_balance', label: 'Amount in Bank', align: 'right', render: (a) => (a.statement_balance == null ? <span className="muted">—</span> : <span>{money(a.statement_balance, a.currency)}<div className="muted small">{date(a.statement_balance_date)}</div></span>) },
-    { key: 'balance', label: 'Amount in OpenBooks', align: 'right', render: (a) => <span className="bold">{money(a.balance, a.currency)}</span> },
+    { key: 'balance', label: 'Amount in BeyondBooks', align: 'right', render: (a) => <span className="bold">{money(a.balance, a.currency)}</span> },
     { key: 'last_reconciled', label: 'Last Reconciled', render: (a) => (a.last_reconciled ? date(a.last_reconciled) : <span className="muted">Never</span>) },
     { key: 'act', label: '', render: (a) => (
       <div onClick={(e) => e.stopPropagation()}>

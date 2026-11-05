@@ -4,7 +4,7 @@
   --fg: #171717; --fg2: #525252; --muted: #737373;
   --nav-bg: #f4f4f5; --nav-bg2: #f4f4f5; --nav-fg: #525252; --nav-active: rgba(23, 23, 23, 0.06);
   /* ledger green, the ink of an account book; white text on it is 6.4:1 */
-  --primary: #1f6f54; --primary-d: #185a44; --primary-l: #eaf3ef; --on-primary: #ffffff;
+  --primary: #235e3a; --primary-d: #1a4a2d; --primary-l: #e9f2ec; --on-primary: #ffffff;
   --green: #16a34a; --red: #dc2626; --orange: #b45309; --blue: #2f5fb3;
   --radius: 8px; --radius-lg: 12px; --shadow: 0 1px 2px rgba(0, 0, 0, 0.05); --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.08);
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -15,7 +15,7 @@
   --bg: #141415; --panel: #19191b; --raised: #232325; --line: rgba(237, 237, 237, 0.08); --line2: rgba(237, 237, 237, 0.045);
   --fg: #ededed; --fg2: #a1a1a6; --muted: #85858b;
   --nav-bg: #0f0f10; --nav-bg2: #0f0f10; --nav-fg: #a1a1a6; --nav-active: rgba(237, 237, 237, 0.06);
-  --primary: #5cc29b; --primary-d: #74cfab; --primary-l: rgba(92, 194, 155, 0.12); --on-primary: #0f0f10;
+  --primary: #6cbf88; --primary-d: #86cd9e; --primary-l: rgba(108, 191, 136, 0.12); --on-primary: #0f0f10;
   --green: #4cc38a; --red: #e5484d; --orange: #e0a050; --blue: #7aa2e8;
   --shadow: none; --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
@@ -51,6 +51,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .sidebar.collapsed { width: 56px; }
 .brand { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 22px; color: var(--fg); font-weight: 600; font-size: 16px; }
 .brand-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; }
+.brand-mark { width: 24px; height: auto; display: block; }
+.auth-logo { height: 40px; width: auto; display: block; margin-bottom: 6px; }
 .nav { flex: 1; overflow-y: auto; padding: 4px 12px 24px; display: flex; flex-direction: column; gap: 2px; }
 .nav-item, .nav-group-btn { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; color: var(--nav-fg); background: none; border: 0; font: inherit; cursor: pointer; text-align: left; transition: background-color 150ms var(--ease), color 150ms var(--ease); }
 .nav-item:hover, .nav-group-btn:hover { background: var(--nav-active); text-decoration: none; color: var(--fg); }

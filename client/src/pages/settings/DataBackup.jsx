@@ -34,7 +34,7 @@ export default function DataBackup() {
       <div style={{ height: 16 }} />
 
       <Card title="Export to CSV">
-        <p className="muted">Spreadsheet-ready files for working outside OpenBooks.</p>
+        <p className="muted">Spreadsheet-ready files for working outside BeyondBooks.</p>
         <div className="grid3">
           {EXPORTS.map(([entity, label]) => (
             <div key={entity} className="row between" style={{ padding: '8px 0', borderBottom: '1px solid var(--line2)' }}>
