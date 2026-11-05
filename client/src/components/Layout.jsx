@@ -3,9 +3,10 @@ import { NavLink, useLocation, useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../store.jsx';
 import { api } from '../api.js';
 import { Menu, Modal, Button, Field, Input, Select } from './ui.jsx';
-import { House, Package, Landmark, ShoppingCart, Receipt, Timer, NotebookPen, ChartColumn, FolderOpen, CircleCheck, ChevronRight, Settings, Menu as MenuIcon, Plus } from 'lucide-react';
+import { House, Package, Landmark, ShoppingCart, Receipt, Timer, NotebookPen, ChartColumn, FolderOpen, CircleCheck, ChevronRight, Settings, Menu as MenuIcon, Plus, Moon, Sun } from 'lucide-react';
 import { INDIAN_STATES } from '@shared/calc.js';
 import Assistant from './Assistant.jsx';
+import { setThemeAttr } from '../lib/theme.js';
 
 export const NAV = [
   { label: 'Home', icon: House, to: '/', end: true },
@@ -117,8 +118,27 @@ export function NewOrgModal({ onClose }) {
   );
 }
 
+function useTheme() {
+  const read = () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
+  const [theme, setTheme] = useState(read);
+  useEffect(() => {
+    // the Profile page can change the theme too, so follow the attribute rather than local state
+    const mo = new MutationObserver(() => setTheme(read()));
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => mo.disconnect();
+  }, []);
+  const toggle = () => {
+    const t = read() === 'dark' ? 'light' : 'dark';
+    setThemeAttr(t);
+    try { localStorage.setItem('ob_theme', t); } catch { /* storage unavailable: the choice still applies for this visit */ }
+    api.put('/auth/me', { theme: t }).catch(() => {}); // saved to the profile when possible; the switch never waits on it
+  };
+  return [theme, toggle];
+}
+
 export default function Layout({ children }) {
   const { user, org, orgs, invites, switchOrg, logout, can, reload, toast } = useApp();
+  const [theme, toggleTheme] = useTheme();
   const { pathname } = useLocation();
   const answerInvite = async (o, accept) => {
     try {
@@ -170,6 +190,10 @@ export default function Layout({ children }) {
               { divider: true },
               { label: '+ New Organization', onClick: () => setNewOrg(true) },
             ]} />
+            <button type="button" className="icon-btn" onClick={toggleTheme} title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
+              {theme === 'dark' ? <Sun size={18} strokeWidth={1.5} /> : <Moon size={18} strokeWidth={1.5} />}
+            </button>
             {can('settings') && <Link to="/settings" className="icon-btn" title="Settings" aria-label="Settings"><Settings size={18} strokeWidth={1.5} /></Link>}
             <Menu label={<span className="avatar">{user?.name?.[0]?.toUpperCase()}</span>} variant="link" items={[
               { label: user?.email, onClick: () => nav('/profile') },

@@ -1,5 +1,6 @@
 // My profile (/profile): personal details, password, theme, default organization and account deletion.
 import { useState } from 'react';
+import { setThemeAttr } from '../../lib/theme.js';
 import { useApp } from '../../store.jsx';
 import { api, session } from '../../api.js';
 import { Button, Card, Field, Input, Modal, PageHeader, Select, Table } from '../../components/ui.jsx';
@@ -56,7 +57,7 @@ export default function Profile() {
 
   const applyTheme = async (t) => {
     setTheme(t);
-    document.documentElement.dataset.theme = t;
+    setThemeAttr(t);
     try { localStorage.setItem('ob_theme', t); } catch { /* storage unavailable: the choice still applies for this visit */ }
     const out = await attempt(toast, () => api.put('/auth/me', { theme: t }), null);
     if (out) setUser({ ...user, theme: t });
