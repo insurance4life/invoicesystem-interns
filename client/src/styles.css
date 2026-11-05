@@ -50,9 +50,14 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .sidebar { width: 248px; background: var(--nav-bg); color: var(--nav-fg); display: flex; flex-direction: column; flex-shrink: 0; border-right: 1px solid var(--line); }
 .sidebar.collapsed { width: 56px; }
 .brand { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 22px; color: var(--fg); font-weight: 600; font-size: 16px; }
-.brand-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; }
-.brand-mark { width: 24px; height: auto; display: block; }
-.auth-logo { height: 40px; width: auto; display: block; margin-bottom: 6px; }
+.brand-mark { width: 24px; height: 24px; object-fit: contain; display: block; flex: none; }
+.auth-brand { margin-bottom: 12px; }
+.auth-logo { height: 40px; width: auto; display: block; margin-bottom: 8px; }
+.auth-logo-dark { display: none; align-items: center; gap: 8px; font-size: 20px; font-weight: 600; color: var(--fg); margin-bottom: 8px; }
+.auth-product { font-size: 13px; color: var(--muted); }
+/* the logo's dark green wordmark disappears on dark surfaces: show the mark with the name set in type */
+:root[data-theme='dark'] .auth-logo { display: none; }
+:root[data-theme='dark'] .auth-logo-dark { display: flex; }
 .nav { flex: 1; overflow-y: auto; padding: 4px 12px 24px; display: flex; flex-direction: column; gap: 2px; }
 .nav-item, .nav-group-btn { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; color: var(--nav-fg); background: none; border: 0; font: inherit; cursor: pointer; text-align: left; transition: background-color 150ms var(--ease), color 150ms var(--ease); }
 .nav-item:hover, .nav-group-btn:hover { background: var(--nav-active); text-decoration: none; color: var(--fg); }

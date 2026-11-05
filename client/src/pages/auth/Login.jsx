@@ -23,7 +23,7 @@ export default function Login() {
   return (
     <div className="auth">
       <form className="auth-card" onSubmit={submit}>
-        <div style={{ marginBottom: 12 }}><img className="auth-logo" src="/brand/beyondsure-logo.webp" alt="BeyondSure" /><div className="muted small">BeyondBooks · accounting by BeyondSure</div></div>
+        <div className="auth-brand"><img className="auth-logo" src="/brand/beyondsure-logo.webp" alt="BeyondSure" /><div className="auth-logo-dark" aria-hidden="true"><img className="brand-mark" src="/brand/beyondsure-mark.png" alt="" />BeyondSure</div><div className="auth-product">BeyondBooks</div></div>
         <h1>Sign in</h1>
         <div className="muted">to access your books</div>
         <div className="stack">
