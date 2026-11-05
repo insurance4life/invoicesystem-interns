@@ -327,6 +327,12 @@ def tax_input(org_id, body, self_id=0):
     kind = kind if jt(kind) else 'simple'
     if kind not in TAX_KINDS:
         raise bad('Invalid tax type')
+    # CGST/SGST/IGST are parts of one GST rate, chosen per document from the place of supply. Created as separate
+    # standard taxes they post to the wrong accounts and miss the GST returns, so new ones are steered to a GST rate.
+    if not self_id and kind != 'gst' and re.match(r'^\s*(c|s|i|ut)?gst(?![a-z])', name, re.I) and (
+            get('SELECT gst_enabled FROM orgs WHERE id = ?', org_id) or {}).get('gst_enabled'):
+        raise bad('CGST, SGST and IGST are applied automatically. Create one tax of type GST with the combined rate '
+                  '(for example 18%): it shows as CGST 9% + SGST 9% for same-state sales and IGST 18% for other states.')
     if get('SELECT id FROM taxes WHERE org_id = ? AND LOWER(name) = LOWER(?) AND id != ?', org_id, name, self_id):
         raise bad(f'A tax named "{name}" already exists')
     if kind == 'group':

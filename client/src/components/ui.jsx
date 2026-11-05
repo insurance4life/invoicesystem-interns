@@ -253,7 +253,11 @@ export function AccountSelect({ value, onChange, filter, placeholder = 'Select a
 
 export function TaxSelect({ value, onChange, placeholder = 'Tax', ...p }) {
   const { meta } = useApp();
-  const opts = (meta?.taxes || []).filter((t) => t.is_active).map((t) => ({ value: t.id, label: `${t.name}${t.kind !== 'group' ? ` [${t.rate}%]` : ' (group)'}` }));
+  const opts = (meta?.taxes || []).filter((t) => t.is_active).map((t) => ({
+    value: t.id, label: `${t.name}${t.kind !== 'group' ? ` [${t.rate}%]` : ' (group)'}`,
+    // a GST rate becomes two taxes or one, depending on the place of supply
+    sub: t.kind === 'gst' && Number(t.rate) > 0 ? `CGST ${Number(t.rate) / 2}% + SGST ${Number(t.rate) / 2}% in-state, IGST ${Number(t.rate)}% inter-state` : undefined,
+  }));
   return <Combo value={value} onChange={onChange} options={opts} placeholder={placeholder} {...p} />;
 }
 
