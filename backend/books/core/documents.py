@@ -82,7 +82,8 @@ def display_status(d):
 
 
 def load_doc(org_id, id, with_lines=True):  # noqa: A002
-    d = get('''SELECT d.*, c.display_name AS contact_name, c.email AS contact_email, c.gstin AS contact_gstin
+    d = get('''SELECT d.*, c.display_name AS contact_name, c.email AS contact_email, c.gstin AS contact_gstin,
+               c.tds_section_id AS contact_tds_section_id
                FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id AND c.org_id = d.org_id WHERE d.id = ? AND d.org_id = ?''', id, org_id)
     if not d:
         raise not_found('Document')

@@ -1040,6 +1040,37 @@ def payments_report(req, kind):
             'extra': [{'title': 'By Payment Mode', 'columns': [col('name', 'Payment Mode'), col('count', 'Count', 'num'), col('amount', 'Amount', 'money')], 'rows': list(modes.values())}]}
 
 
+def tds_report(req, kind):
+    """TDS deducted on payments in the period: by us from vendors (made, owed to the government as TDS Payable) or by
+    customers from us (received, claimable as TDS Receivable). Amounts are in the base currency."""
+    p = params(req)
+    rows = [{**r, 'gross': r2(r['gross']), 'tds': r2(r['tds']), 'section': r['section'] or 'No section'} for r in all(
+        '''SELECT p.id AS payment_id, p.type AS payment_type, p.number, p.date, p.contact_id, c.display_name AS contact_name, c.pan,
+      t.section, t.name AS section_name, t.rate,
+      (p.amount + COALESCE(p.tds_amount,0)) * COALESCE(p.exchange_rate,1) AS gross, COALESCE(p.tds_amount,0) * COALESCE(p.exchange_rate,1) AS tds
+    FROM payments p LEFT JOIN contacts c ON c.id = p.contact_id LEFT JOIN tds_sections t ON t.id = p.tds_section_id AND t.org_id = p.org_id
+    WHERE p.org_id = ? AND p.type = ? AND COALESCE(p.tds_amount,0) > 0 AND p.date >= ? AND p.date <= ?
+    ORDER BY p.date COLLATE "C", p.id''', p['org']['id'], kind, p['from'], p['to'])]
+    by_section = {}
+    for r in rows:
+        key = (r['section'], r['section_name'] or '', r['rate'])
+        x = by_section.get(key) or {'section': r['section'], 'section_name': r['section_name'] or '', 'rate': r['rate'], 'count': 0, 'gross': 0, 'tds': 0}
+        x['count'] += 1
+        x['gross'] = r2(x['gross'] + r['gross'])
+        x['tds'] = r2(x['tds'] + r['tds'])
+        by_section[key] = x
+    made = kind == 'made'
+    party = 'Vendor' if made else 'Customer'
+    return {**head('TDS Payable' if made else 'TDS Receivable', p),
+            'columns': [col('date', 'Date', 'date'), col('number', 'Payment#', 'payment'), col('contact_name', party, 'contact'), col('pan', 'PAN'),
+                        col('section', 'Section'), col('section_name', 'Nature of payment'), col('rate', 'Rate %', 'num'),
+                        col('gross', 'Amount paid' if made else 'Amount credited', 'money'), col('tds', 'TDS', 'money')],
+            'rows': rows, 'totals': {'gross': r2(sum_js(r['gross'] for r in rows)), 'tds': r2(sum_js(r['tds'] for r in rows))},
+            'extra': [{'title': 'By section', 'columns': [col('section', 'Section'), col('section_name', 'Nature of payment'), col('rate', 'Rate %', 'num'),
+                                                           col('count', 'Payments', 'num'), col('gross', 'Amount', 'money'), col('tds', 'TDS', 'money')],
+                       'rows': sorted(by_section.values(), key=lambda x: (x['section'], x['section_name']))}]}
+
+
 _REFUND_LABELS = {'creditnote': 'Credit Note', 'vendorcredit': 'Vendor Credit', 'payment': 'Payment'}
 
 
@@ -2023,6 +2054,8 @@ REPORTS = {
     'bill-details': lambda req: doc_details(req, 'bill', 'Bill Details'),
     'purchaseorder-details': lambda req: doc_details(req, 'purchaseorder', 'Purchase Order Details'),
     'payments-made': lambda req: payments_report(req, 'made'),
+    'tds-payable': lambda req: tds_report(req, 'made'),
+    'tds-receivable': lambda req: tds_report(req, 'received'),
     'vendor-credit-details': lambda req: doc_details(req, 'vendorcredit', 'Vendor Credit Details'),
     'expense-details': rpt_expense_details,
     'expenses-by-category': rpt_expenses_by_category,
@@ -2053,10 +2086,10 @@ def _gstr1_json_route(req):
 # side's view right; summaries such as P&L and the balance sheet need reports:view only.
 REPORT_SIDE = {k: 'sales' for k in ('sales-by-customer', 'sales-by-item', 'sales-by-salesperson', 'ar-aging-summary', 'ar-aging-details',
                                      'customer-balances', 'invoice-details', 'quote-details', 'salesorder-details', 'creditnote-details',
-                                     'salesreceipt-details', 'time-to-get-paid', 'payments-received', 'gstr1')}
+                                     'salesreceipt-details', 'time-to-get-paid', 'payments-received', 'gstr1', 'tds-receivable')}
 REPORT_SIDE.update({k: 'purchases' for k in ('purchases-by-vendor', 'purchases-by-item', 'ap-aging-summary', 'ap-aging-details', 'vendor-balances',
                                               'bill-details', 'purchaseorder-details', 'payments-made', 'vendor-credit-details', 'expense-details',
-                                              'expenses-by-category', 'billable-expenses')})
+                                              'expenses-by-category', 'billable-expenses', 'tds-payable')})
 
 
 def _report(req):

@@ -46,7 +46,7 @@ export default function PaymentView({ kind }) {
             <table style={{ width: 'auto' }}>
               <tbody>
                 {[['Payment Date', date(p.date)], ['Payment#', p.number], ['Reference Number', p.reference], ['Payment Mode', p.mode], [kind === 'received' ? 'Deposited To' : 'Paid Through', p.account_name],
-                  p.bank_charges ? ['Bank Charges', money(p.bank_charges, p.currency)] : null, p.tds_amount ? ['TDS', money(p.tds_amount, p.currency)] : null].filter(Boolean).map(([k, v]) => (
+                  p.bank_charges ? ['Bank Charges', money(p.bank_charges, p.currency)] : null, p.tds_amount ? ['TDS', `${money(p.tds_amount, p.currency)}${p.tds_section_name ? ` · ${p.tds_section ? `${p.tds_section} ` : ''}${p.tds_section_name} @ ${Number(p.tds_rate)}%` : ''}`] : null].filter(Boolean).map(([k, v]) => (
                   <tr key={k}><td style={{ color: '#666', border: 0, padding: '4px 16px 4px 0' }}>{k}</td><td style={{ border: 0, padding: 4, fontWeight: 500 }}>{v || '—'}</td></tr>
                 ))}
               </tbody>

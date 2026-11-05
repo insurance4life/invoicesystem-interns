@@ -3,7 +3,7 @@ from books.core.db import all, get, run, insert, update, tx
 from books.core.router import bad, not_found, forbidden
 from books.core.auth import can
 from books.core.util import round2, next_number, assert_unlocked, canon_date, cap_list, BANK_TYPES
-from books.core.jsutil import jsnum, jsstr, today, truthy
+from books.core.jsutil import jsnum, jsstr, today, truthy, to_int
 from books.core.calc import sum_js
 from books.core.ledger import post, unpost, sys_account
 from books.core.documents import refresh_balance, retainer_available, DOC_TYPES
@@ -33,8 +33,10 @@ def payment_unused(p):
 
 
 def load_payment(org_id, id):  # noqa: A002
-    p = get('''SELECT p.*, c.display_name AS contact_name, c.email AS contact_email, a.name AS account_name FROM payments p
-               LEFT JOIN contacts c ON c.id = p.contact_id LEFT JOIN accounts a ON a.id = p.account_id WHERE p.id = ? AND p.org_id = ?''', id, org_id)
+    p = get('''SELECT p.*, c.display_name AS contact_name, c.email AS contact_email, a.name AS account_name,
+               t.section AS tds_section, t.name AS tds_section_name, t.rate AS tds_rate FROM payments p
+               LEFT JOIN contacts c ON c.id = p.contact_id LEFT JOIN accounts a ON a.id = p.account_id
+               LEFT JOIN tds_sections t ON t.id = p.tds_section_id AND t.org_id = p.org_id WHERE p.id = ? AND p.org_id = ?''', id, org_id)
     if not p:
         raise not_found('Payment')
     p['allocations'] = all('''SELECT pa.*, d.number, d.doc_type, d.date AS document_date, d.total, d.balance FROM payment_allocations pa
@@ -114,6 +116,17 @@ def save_payment(req, kind, body, id=None):  # noqa: A002
         total_alloc = round2(sum_js(jsnum(a.get('amount')) for a in allocations))
         if total_alloc > round2(amount + tds) + 0.001:
             raise bad('Amount applied to documents exceeds the payment amount')
+        section_id = to_int(body.get('tds_section_id')) if 'tds_section_id' in body else (existing or {}).get('tds_section_id')
+        if not tds:
+            section_id = None  # a section only describes a deduction
+        if section_id is not None and not (isinstance(section_id, int) and 0 < section_id < 2 ** 31):
+            raise bad('Choose a valid TDS section')
+        if section_id:
+            sec = get('SELECT id, is_active FROM tds_sections WHERE id = ? AND org_id = ?', section_id, org['id'])
+            if not sec:
+                raise bad('Choose a valid TDS section')
+            if not sec['is_active'] and section_id != (existing or {}).get('tds_section_id'):
+                raise bad('This TDS section is inactive')
         account_id = body.get('account_id') or sys_account(org['id'], 'undeposited_funds' if kind == 'received' else 'petty_cash')
         acct = get('SELECT id, type FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id'])
         if not acct:
@@ -124,7 +137,7 @@ def save_payment(req, kind, body, id=None):  # noqa: A002
         fields = {
             'contact_id': contact['id'], 'date': date, 'amount': amount, 'currency': body.get('currency') or contact.get('currency') or org.get('currency'),
             'exchange_rate': fx, 'mode': body.get('mode') or 'Cash', 'account_id': account_id,
-            'reference': body.get('reference') or None, 'bank_charges': charges, 'tds_amount': tds,
+            'reference': body.get('reference') or None, 'bank_charges': charges, 'tds_amount': tds, 'tds_section_id': section_id or None,
             'notes': body.get('notes') or None, 'is_online': 1 if truthy(body.get('is_online')) else 0,
         }
         pid = id

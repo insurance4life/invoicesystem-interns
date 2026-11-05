@@ -2,7 +2,7 @@
 import { Link } from 'react-router-dom';
 import { PageHeader } from '../../components/ui.jsx';
 import { tileStyle } from './common.jsx';
-import { Building2, Palette, Users, ShieldCheck, Settings, Coins, BookOpen, Calculator, Landmark, Hash, FileText, Mail, Puzzle, Bell, Zap, NotebookPen, Link2, Hourglass, CircleCheck, Save } from 'lucide-react';
+import { Building2, Palette, Users, ShieldCheck, Settings, Coins, BookOpen, Calculator, Landmark, Hash, FileText, Mail, Puzzle, Bell, Zap, NotebookPen, Link2, Hourglass, CircleCheck, Save, Percent } from 'lucide-react';
 
 const GROUPS = [
   { title: 'Organization', items: [
@@ -17,6 +17,7 @@ const GROUPS = [
   { title: 'Taxes and Compliance', items: [
     { to: '/settings/taxes', icon: Calculator, label: 'Taxes', desc: 'Tax rates and tax groups' },
     { to: '/settings/gst', icon: Landmark, label: 'GST Settings', desc: 'GSTIN, state and GST on transactions' },
+    { to: '/settings/tds-sections', icon: Percent, label: 'TDS Sections', desc: 'Sections and rates for tax deducted at source' },
   ] },
   { title: 'Customization', items: [
     { to: '/settings/number-series', icon: Hash, label: 'Transaction Number Series', desc: 'Prefixes and next numbers' },

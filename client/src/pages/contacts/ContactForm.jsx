@@ -5,6 +5,7 @@ import { api } from '../../api.js';
 import { PageHeader, Button, Field, Input, Textarea, NumberInput, Select, Checkbox, Tabs, Empty } from '../../components/ui.jsx';
 import { INDIAN_STATES } from '@shared/calc.js';
 import { today } from '../../lib/format.js';
+import { tdsOptions } from '../../lib/tds.js';
 
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -27,7 +28,7 @@ function fromContact(c) {
     customer_type: c.customer_type || 'business', salutation: c.salutation || '', first_name: c.first_name || '', last_name: c.last_name || '',
     company_name: c.company_name || '', display_name: c.display_name || '', email: c.email || '', phone: c.phone || '', mobile: c.mobile || '',
     website: c.website || '', gst_treatment: c.gst_treatment || 'unregistered', gstin: c.gstin || '', place_of_supply: c.place_of_supply || '',
-    pan: c.pan || '', currency: c.currency || '', payment_term_id: c.payment_term_id ?? '',
+    pan: c.pan || '', currency: c.currency || '', payment_term_id: c.payment_term_id ?? '', tds_section_id: c.tds_section_id ?? '',
     hiddenOpening: !!c.id && !('opening_balance' in c), // AR/AP figures come back only to sales/purchases viewers
     opening_balance: c.opening_balance || '', opening_balance_date: c.opening_balance_date || today(),
     credit_limit: c.credit_limit ?? '', price_list_id: c.price_list_id ?? '', portal_enabled: !!c.portal_enabled,
@@ -103,7 +104,7 @@ export default function ContactForm({ type }) {
     const body = {
       type, customer_type: f.customer_type, salutation: f.salutation, first_name: f.first_name, last_name: f.last_name,
       company_name: f.company_name, display_name: f.display_name.trim(), email: f.email, phone: f.phone, mobile: f.mobile, website: f.website,
-      currency: f.currency || null, payment_term_id: num(f.payment_term_id), gst_treatment: f.gst_treatment,
+      currency: f.currency || null, payment_term_id: num(f.payment_term_id), tds_section_id: num(f.tds_section_id), gst_treatment: f.gst_treatment,
       gstin: f.gstin || null, pan: f.pan || null, place_of_supply: f.place_of_supply || null,
       billing_address: addrOrNull(f.billing), shipping_address: addrOrNull(f.shipping),
       contact_persons: f.contact_persons.filter((p) => p.first_name || p.last_name || p.email),
@@ -186,6 +187,10 @@ export default function ContactForm({ type }) {
             </Field>
             <Field label="PAN" inline>
               <Input value={f.pan} onChange={(e) => set('pan', e.target.value.toUpperCase())} maxLength={10} />
+            </Field>
+            <Field label="TDS section" inline hint={isCust ? 'Filled in when this customer pays you after deducting TDS' : 'Filled in when you pay this vendor'}>
+              <Select value={f.tds_section_id} onChange={(e) => set('tds_section_id', e.target.value)} placeholder="No TDS"
+                options={tdsOptions(meta?.tds_sections, f.tds_section_id)} />
             </Field>
             <Field label="Currency" inline>
               <Select value={f.currency} onChange={(e) => set('currency', e.target.value)} placeholder={`Organization default (${org?.currency || 'INR'})`}

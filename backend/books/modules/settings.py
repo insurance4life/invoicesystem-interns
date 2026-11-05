@@ -364,6 +364,31 @@ def recalc_groups(org_id):
         update('taxes', g['id'], {'rate': _sum_rates(members)})
 
 
+# ---------------------------------------------------------------- TDS sections
+def tds_row(org_id, id):  # noqa: A002
+    t = get('SELECT * FROM tds_sections WHERE id = ? AND org_id = ?', _id(id), org_id)
+    if not t:
+        raise not_found('TDS section')
+    return t
+
+
+def tds_input(org_id, body, self_id=0):
+    name = sstr(bget(body, 'name'))
+    if not name:
+        raise bad('Name is required, e.g. Professional fees')
+    section = sstr(bget(body, 'section')).upper() or None
+    if section and not re.fullmatch(r'[0-9A-Z()-]{2,12}', section):
+        raise bad('Section must be the Act section, e.g. 194J')
+    r = bget(body, 'rate')
+    rate = js_number(0 if r is None or r is UNDEF else r)
+    if not is_finite(rate) or rate <= 0 or rate > 100:
+        raise bad('Rate must be more than 0 and at most 100')
+    if get("SELECT id FROM tds_sections WHERE org_id = ? AND LOWER(name) = LOWER(?) AND COALESCE(section, '') = COALESCE(?, '') AND id != ?",
+           org_id, name, section, self_id):
+        raise bad('A TDS section with this name already exists')
+    return {'name': name, 'section': section, 'rate': rate}
+
+
 def gst_view(org_id):
     o = get('SELECT gstin, gst_enabled, state, country FROM orgs WHERE id = ?', org_id)
     return {'gstin': o['gstin'], 'gst_enabled': truthy(o['gst_enabled']), 'state': o['state'], 'country': o['country']}
@@ -876,6 +901,41 @@ def routes(r):  # noqa: C901
         audit(req, 'tax', tid, 'deleted', t['name'])
         return {'ok': True}
     r.delete('/taxes/:id', perm('settings', 'delete'), delete_tax)
+
+    # ---------- TDS sections ----------
+    r.get('/tds-sections', perm('settings', 'view'), lambda req: all(
+        'SELECT * FROM tds_sections WHERE org_id = ? ORDER BY section COLLATE "C" NULLS LAST, rate, id', req.org['id']))
+
+    def post_tds(req):
+        b = _body(req)
+        data = tds_input(req.org['id'], b)
+        tid = insert('tds_sections', {'org_id': req.org['id'], **data, 'is_active': to_flag(b['is_active']) if 'is_active' in b else 1})
+        audit(req, 'tds_section', tid, 'created', data['name'])
+        return tds_row(req.org['id'], tid)
+    r.post('/tds-sections', perm('settings', 'create'), post_tds)
+
+    def put_tds(req):
+        b = _body(req)
+        t = tds_row(req.org['id'], req.params['id'])
+        data = tds_input(req.org['id'], {**t, **b}, t['id'])
+        if 'is_active' in b:
+            data['is_active'] = to_flag(b['is_active'])
+        update('tds_sections', t['id'], data)
+        audit(req, 'tds_section', t['id'], 'updated', data['name'])
+        return tds_row(req.org['id'], t['id'])
+    r.put('/tds-sections/:id', perm('settings', 'edit'), put_tds)
+
+    def delete_tds(req):
+        t = tds_row(req.org['id'], req.params['id'])
+        o = req.org['id']
+        n = get('''SELECT (SELECT COUNT(*) FROM payments WHERE org_id = ? AND tds_section_id = ?)
+          + (SELECT COUNT(*) FROM contacts WHERE org_id = ? AND tds_section_id = ?) AS n''', o, t['id'], o, t['id'])['n']
+        if n:
+            raise bad(f'This section is used by {n} payment(s) or contact(s). Deactivate it instead.')
+        run('DELETE FROM tds_sections WHERE id = ? AND org_id = ?', t['id'], o)
+        audit(req, 'tds_section', t['id'], 'deleted', t['name'])
+        return {'ok': True}
+    r.delete('/tds-sections/:id', perm('settings', 'delete'), delete_tds)
 
     # ---------- custom fields ----------
     def list_cf(req):

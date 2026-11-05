@@ -5,6 +5,7 @@ import { api } from '../../api.js';
 import { PageHeader, Button, Field, Input, Textarea, NumberInput, Select, Combo, AccountSelect, Table, Checkbox, Spinner } from '../../components/ui.jsx';
 import { today, PAYMENT_MODES } from '../../lib/format.js';
 import { round2 } from '@shared/calc.js';
+import { applyNet, taxableShare, tdsOnApplied, tdsOptions } from '../../lib/tds.js';
 
 export default function PaymentForm({ kind }) {
   const { id } = useParams();
@@ -26,7 +27,7 @@ export default function PaymentForm({ kind }) {
         setAlloc(Object.fromEntries(p.allocations.map((a) => [a.document_id, a.amount])));
       });
     } else {
-      setF({ contact_id: sp.get('contact_id') ? Number(sp.get('contact_id')) : '', date: today(), amount: '', mode: 'Cash', reference: '', notes: '', bank_charges: '', tds_amount: '', currency: baseCur, exchange_rate: 1,
+      setF({ contact_id: sp.get('contact_id') ? Number(sp.get('contact_id')) : '', date: today(), amount: '', mode: 'Cash', reference: '', notes: '', bank_charges: '', tds_amount: '', tds_section_id: '', currency: baseCur, exchange_rate: 1,
         account_id: sysAccount(kind === 'received' ? 'undeposited_funds' : 'petty_cash')?.id, send_receipt: false });
     }
   }, [id, kind]); // eslint-disable-line
@@ -42,6 +43,7 @@ export default function PaymentForm({ kind }) {
       }
       setDocs(d);
       const c = contacts.find((x) => x.id === Number(f.contact_id));
+      if (!id) setF((x) => ({ ...x, tds_section_id: c?.tds_section_id || '', tds_amount: '' }));
       if (!id && c?.currency && c.currency !== f.currency) setF((x) => ({ ...x, currency: c.currency, exchange_rate: meta.currencies.find((m) => m.code === c.currency)?.exchange_rate || 1 }));
     });
   }, [f?.contact_id, contacts.length]); // eslint-disable-line
@@ -50,7 +52,17 @@ export default function PaymentForm({ kind }) {
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   const totalAlloc = round2(Object.values(alloc).reduce((s, v) => s + (Number(v) || 0), 0));
   const gross = round2(Number(f.amount || 0) + Number(f.tds_amount || 0));
-  const autoApply = (amount) => {
+  const section = (meta?.tds_sections || []).find((s) => s.id === Number(f.tds_section_id));
+  const rate = Number(section?.rate) || 0;
+  const taxableApplied = round2(docs.reduce((s, d) => s + (Number(alloc[d.id]) || 0) * taxableShare(d), 0));
+  // with a section, the cash paid is spread over the documents and TDS settles the rest of each one
+  const autoApply = (amount, r = rate) => {
+    if (r > 0) {
+      const out = applyNet(docs, amount, r);
+      setAlloc(out.alloc);
+      set('tds_amount', out.tds || '');
+      return;
+    }
     let left = round2(Number(amount || 0) + Number(f.tds_amount || 0));
     const a = {};
     for (const d of [...docs].sort((x, y) => (x.date < y.date ? -1 : 1))) {
@@ -58,6 +70,24 @@ export default function PaymentForm({ kind }) {
       if (take > 0) { a[d.id] = take; left = round2(left - take); }
     }
     setAlloc(a);
+  };
+  const setApplied = (docId, v) => {
+    const next = { ...alloc, [docId]: v };
+    setAlloc(next);
+    if (rate > 0) {
+      const tds = tdsOnApplied(docs, next, rate);
+      const total = round2(Object.values(next).reduce((s, x) => s + (Number(x) || 0), 0));
+      setF((x) => ({ ...x, tds_amount: tds || '', amount: round2(total - tds) }));
+    }
+  };
+  const chooseSection = (v) => {
+    const r = Number((meta?.tds_sections || []).find((s) => s.id === Number(v))?.rate) || 0;
+    set('tds_section_id', v);
+    if (!r) return set('tds_amount', '');
+    if (totalAlloc > 0) {
+      const tds = tdsOnApplied(docs, alloc, r);
+      setF((x) => ({ ...x, tds_section_id: v, tds_amount: tds || '', amount: round2(totalAlloc - tds) }));
+    } else if (Number(f.amount) > 0) autoApply(f.amount, r);
   };
   const save = async () => {
     if (!f.contact_id) return toast(`Select a ${contactType}`, 'error');
@@ -93,7 +123,13 @@ export default function PaymentForm({ kind }) {
           <Field inline label="Payment Mode"><Select value={f.mode} onChange={(e) => set('mode', e.target.value)} options={PAYMENT_MODES.map((m) => [m, m])} /></Field>
           <Field inline label={kind === 'received' ? 'Deposit To' : 'Paid Through'} required><AccountSelect value={f.account_id} onChange={(v) => set('account_id', v)} filter={['cash', 'bank', 'credit_card', 'payment_clearing', 'other_current_asset', 'other_current_liability', 'equity']} /></Field>
           <Field inline label="Reference#"><Input value={f.reference} onChange={(e) => set('reference', e.target.value)} /></Field>
-          <Field inline label={kind === 'received' ? 'TDS deducted by customer' : 'TDS deducted'}><NumberInput value={f.tds_amount} onChange={(v) => set('tds_amount', v)} /></Field>
+          <Field inline label="TDS section" hint={kind === 'received' ? 'If the customer deducted TDS from this payment' : 'If you deduct TDS from this payment'}>
+            <Select value={f.tds_section_id ?? ''} onChange={(e) => chooseSection(e.target.value)} placeholder="No TDS" options={tdsOptions(meta?.tds_sections, f.tds_section_id)} />
+          </Field>
+          <Field inline label={kind === 'received' ? 'TDS deducted by customer' : 'TDS deducted'}
+            hint={rate > 0 && taxableApplied > 0 ? `${rate}% of ${money(taxableApplied, f.currency)} before GST` : undefined}>
+            <NumberInput value={f.tds_amount} onChange={(v) => set('tds_amount', v)} />
+          </Field>
           {f.currency !== baseCur && <Field inline label={`Exchange rate (1 ${f.currency} =)`}><NumberInput value={f.exchange_rate} onChange={(v) => set('exchange_rate', v)} /></Field>}
         </div>
       </div>
@@ -105,7 +141,7 @@ export default function PaymentForm({ kind }) {
           { key: 'due_date', label: 'Due Date', render: (d) => date(d.due_date) },
           { key: 'total', label: 'Amount', align: 'right', render: (d) => money(d.total, d.currency) },
           { key: 'balance', label: 'Amount Due', align: 'right', render: (d) => money(d.balance, d.currency) },
-          { key: 'pay', label: 'Payment', align: 'right', render: (d) => <NumberInput style={{ width: 130 }} value={alloc[d.id]} onChange={(v) => setAlloc({ ...alloc, [d.id]: v })} /> },
+          { key: 'pay', label: 'Payment', align: 'right', render: (d) => <NumberInput style={{ width: 130 }} value={alloc[d.id]} onChange={(v) => setApplied(d.id, v)} /> },
         ]} />
         <div className="totals mt">
           <div className="t-row"><span>Amount {kind === 'received' ? 'Received' : 'Paid'}{f.tds_amount ? ' + TDS' : ''}</span><span>{money(gross, f.currency)}</span></div>

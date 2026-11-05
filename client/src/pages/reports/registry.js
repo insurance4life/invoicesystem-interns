@@ -53,6 +53,8 @@ export const REPORTS = [
   R('gstr1', 'GSTR-1', 'Taxes / GST', 'Outward supplies: B2B, B2C, credit notes and HSN, with JSON download.', { renderer: 'gstr1' }),
   R('gstr3b', 'GSTR-3B Summary', 'Taxes / GST', 'Outward supplies and eligible input tax credit.'),
   R('hsn-summary', 'HSN Summary', 'Taxes / GST', 'Sales by HSN/SAC code and tax rate.'),
+  R('tds-payable', 'TDS Payable', 'Taxes / GST', 'TDS you deducted from vendors, by section, for the TDS return.'),
+  R('tds-receivable', 'TDS Receivable', 'Taxes / GST', 'TDS customers deducted from you, to match against Form 26AS.'),
 
   R('trial-balance', 'Trial Balance', 'Accountant', 'Net debit and credit of every account.', { date: 'asof' }),
   R('general-ledger', 'General Ledger', 'Accountant', 'Opening, transactions and closing balance per account.', { account: true }),

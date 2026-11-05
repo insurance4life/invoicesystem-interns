@@ -7,6 +7,7 @@ from books.core.router import bad
 from books.core.ledger import create_default_accounts
 from books.core.auth import ADMIN_PERMS, STAFF_PERMS, STAFF_LIMITED_PERMS, TIMESHEET_PERMS, ACCOUNTANT_PERMS
 from books.core.util import DEFAULT_SETTINGS
+from books.core.tds import seed_tds_sections
 
 CURRENCIES = {
     'INR': ['₹', 'Indian Rupee'], 'USD': ['$', 'US Dollar'], 'EUR': ['€', 'Euro'], 'GBP': ['£', 'Pound Sterling'],
@@ -76,6 +77,7 @@ def create_org(user_id, data):
             for r in [0, 5, 12, 18, 28]:
                 insert('taxes', {'org_id': org_id, 'name': f'GST{r}', 'rate': r, 'kind': 'gst'})
             insert('taxes', {'org_id': org_id, 'name': 'Cess 1%', 'rate': 1, 'kind': 'simple'})
+            seed_tds_sections(insert, org_id)
         else:
             insert('taxes', {'org_id': org_id, 'name': 'Sales Tax', 'rate': 8, 'kind': 'simple'})
             insert('taxes', {'org_id': org_id, 'name': 'VAT', 'rate': 10, 'kind': 'simple'})

@@ -179,7 +179,7 @@ def audit(req, entity_type, entity_id, action, detail=''):
             log.error('event listener failed: %s', e)
 
 
-_OWNED_TABLES = {'accounts', 'contacts', 'items', 'documents', 'projects', 'taxes', 'payment_terms'}
+_OWNED_TABLES = {'accounts', 'contacts', 'items', 'documents', 'projects', 'taxes', 'payment_terms', 'tds_sections'}
 
 
 def assert_owned(org_id, table, ids, label):

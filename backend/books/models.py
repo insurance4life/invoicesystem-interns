@@ -138,6 +138,18 @@ class Tax(models.Model):
         db_table = 'taxes'
 
 
+class TdsSection(models.Model):
+    """An Income-tax Act TDS section (194C, 194J, ...) and the rate deducted under it."""
+    org = ORG()
+    name = T(null=False)
+    section = T()
+    rate = R(0)
+    is_active = I(1)
+
+    class Meta:
+        db_table = 'tds_sections'
+
+
 class Account(models.Model):
     org = ORG()
     code = T()
@@ -192,6 +204,7 @@ class Contact(models.Model):
     linked_contact_id = I()
     custom_fields = T()
     is_active = I(1)
+    tds_section_id = I()
     created_at = created()
 
     class Meta:
@@ -339,6 +352,7 @@ class Payment(models.Model):
     reference = T()
     bank_charges = R(0)
     tds_amount = R(0)
+    tds_section_id = I()
     notes = T()
     is_online = I(0)
     created_by = I()

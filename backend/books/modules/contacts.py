@@ -4,7 +4,7 @@ import re
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, forbidden
-from books.core.util import token, audit, round2, today, like_pattern, clean_custom_fields
+from books.core.util import token, audit, round2, today, like_pattern, clean_custom_fields, assert_owned
 from books.core.auth import perm, can
 from books.core.documents import DOC_TYPES
 from books.core.jsutil import to_int, truthy, jsnum
@@ -14,7 +14,7 @@ from books.core.payments import available_credits
 FIELDS = ['type', 'customer_type', 'display_name', 'company_name', 'salutation', 'first_name', 'last_name', 'email', 'phone', 'mobile',
           'website', 'currency', 'payment_term_id', 'gst_treatment', 'gstin', 'pan', 'place_of_supply', 'tax_id', 'billing_address',
           'shipping_address', 'contact_persons', 'notes', 'credit_limit', 'price_list_id', 'portal_enabled', 'reminders_enabled',
-          'linked_contact_id', 'custom_fields', 'is_active']
+          'linked_contact_id', 'custom_fields', 'is_active', 'tds_section_id']
 JSON_COLS = ['billing_address', 'shipping_address', 'contact_persons', 'custom_fields']
 GSTIN_RE = re.compile(r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$')
 
@@ -106,7 +106,7 @@ def routes(r):
             p += [pat] * 5
         order = {'display_name': 'lower(c.display_name), c.id', 'created': 'c.id DESC', 'company': 'c.company_name, c.id'}.get(sort) or 'c.display_name, c.id'
         rows = all(f'''SELECT c.id, c.type, c.display_name, c.company_name, c.email, c.phone, c.gstin, c.currency, c.is_active, c.place_of_supply,
-            c.gst_treatment, c.payment_term_id,
+            c.gst_treatment, c.payment_term_id, c.tds_section_id,
             (SELECT COALESCE(SUM(CASE WHEN c.type='vendor' THEN l.credit - l.debit ELSE l.debit - l.credit END),0) FROM ledger l
               JOIN accounts a ON a.id = l.account_id WHERE l.contact_id = c.id AND l.org_id = c.org_id AND a.org_id = c.org_id AND a.system_code IN ('ar','ap')) AS outstanding
           FROM contacts c WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ? OFFSET ?''', *p, per_page, (page - 1) * per_page)
@@ -119,6 +119,7 @@ def routes(r):
     def create(req):
         def _do():
             o = _clean_contact(req.body)
+            assert_owned(req.org['id'], 'tds_sections', [o.get('tds_section_id')], 'TDS section')
             if not o.get('display_name'):
                 raise bad('Display name is required')
             if o.get('type') not in ('customer', 'vendor'):
@@ -142,6 +143,7 @@ def routes(r):
         def _do():
             c = load_contact(req.org['id'], to_int(req.params['id']))
             o = _clean_contact(req.body)
+            assert_owned(req.org['id'], 'tds_sections', [o.get('tds_section_id')], 'TDS section')
             o.pop('type', None)
             if 'display_name' in o and o['display_name'] is None:
                 raise bad('Display name is required')
@@ -191,7 +193,7 @@ def routes(r):
 
     r.get('/contacts/:id/credits', _money_view, lambda req: available_credits(req.org['id'], to_int(req.params['id'])))
 
-    r.get('/contacts/:id/open-documents', _money_view, lambda req: all('''SELECT id, doc_type, number, date, due_date, total, balance, currency, exchange_rate FROM documents
+    r.get('/contacts/:id/open-documents', _money_view, lambda req: all('''SELECT id, doc_type, number, date, due_date, total, tax_total, balance, currency, exchange_rate FROM documents
         WHERE org_id = ? AND contact_id = ? AND doc_type IN ('invoice','bill','retainer') AND status = 'open' AND balance > 0.004 ORDER BY date, id''',
         req.org['id'], to_int(req.params['id'])))
 

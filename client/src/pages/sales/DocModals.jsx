@@ -5,6 +5,7 @@ import { useApp } from '../../store.jsx';
 import { Modal, Button, Field, Input, Textarea, NumberInput, Select, AccountSelect, Combo, Table, Checkbox } from '../../components/ui.jsx';
 import { today, PAYMENT_MODES } from '../../lib/format.js';
 import { round2 } from '@shared/calc.js';
+import { taxableShare, tdsOptions } from '../../lib/tds.js';
 
 export function EmailModal({ type, doc, onClose, onDone }) {
   const { toast } = useApp();
@@ -32,12 +33,30 @@ export function EmailModal({ type, doc, onClose, onDone }) {
 }
 
 export function PaymentModal({ kind, doc, onClose, onDone }) {
-  const { toast, sysAccount } = useApp();
-  const [f, setF] = useState({
-    amount: doc.balance, date: today(), mode: 'Cash', account_id: sysAccount(kind === 'received' ? 'undeposited_funds' : 'petty_cash')?.id,
-    reference: '', bank_charges: '', tds_amount: '', notes: '', exchange_rate: doc.exchange_rate || 1, send_receipt: false,
+  const { toast, sysAccount, meta, money } = useApp();
+  const share = taxableShare(doc);
+  const rateOf = (sid) => Number((meta?.tds_sections || []).find((s) => s.id === Number(sid) && s.is_active)?.rate) || 0;
+  // TDS on what this payment settles of the document, charged on the part before GST
+  const split = (sid, cash) => {
+    const r = rateOf(sid) / 100;
+    if (!r) return { tds_amount: '' };
+    if (cash === undefined) {
+      const tds = round2(doc.balance * share * r);
+      return { tds_amount: tds, amount: round2(doc.balance - tds) };
+    }
+    const settled = Math.min(doc.balance, (Number(cash) || 0) / (1 - r * share));
+    return { tds_amount: round2(settled * share * r) };
+  };
+  const [f, setF] = useState(() => {
+    const sid = rateOf(doc.contact_tds_section_id) ? doc.contact_tds_section_id : '';
+    return {
+      amount: doc.balance, date: today(), mode: 'Cash', account_id: sysAccount(kind === 'received' ? 'undeposited_funds' : 'petty_cash')?.id,
+      reference: '', bank_charges: '', tds_amount: '', tds_section_id: sid, notes: '', exchange_rate: doc.exchange_rate || 1, send_receipt: false,
+      ...(sid ? split(sid) : {}),
+    };
   });
   const [busy, setBusy] = useState(false);
+  const rate = rateOf(f.tds_section_id);
   const applied = round2(Math.min(Number(f.amount || 0) + Number(f.tds_amount || 0), doc.balance));
   const save = async () => {
     setBusy(true);
@@ -51,12 +70,19 @@ export function PaymentModal({ kind, doc, onClose, onDone }) {
   return (
     <Modal title={`Payment for ${doc.number}`} onClose={onClose} width={620} footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} onClick={save}>Record Payment</Button></>}>
       <div className="grid2">
-        <Field label={`Amount ${kind === 'received' ? 'Received' : 'Paid'} (${doc.currency})`} required><NumberInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} /></Field>
+        <Field label={`Amount ${kind === 'received' ? 'Received' : 'Paid'} (${doc.currency})`} required><NumberInput value={f.amount} onChange={(v) => setF({ ...f, amount: v, ...(rate ? split(f.tds_section_id, v) : {}) })} /></Field>
         <Field label="Payment Date" required><Input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
         <Field label="Payment Mode"><Select value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })} options={PAYMENT_MODES.map((m) => [m, m])} /></Field>
         <Field label={kind === 'received' ? 'Deposit To' : 'Paid Through'} required><AccountSelect value={f.account_id} onChange={(v) => setF({ ...f, account_id: v })} filter={['cash', 'bank', 'credit_card', 'payment_clearing', 'other_current_asset', 'other_current_liability', 'equity']} /></Field>
         <Field label="Bank Charges (if any)"><NumberInput value={f.bank_charges} onChange={(v) => setF({ ...f, bank_charges: v })} /></Field>
-        <Field label={kind === 'received' ? 'Tax Deducted (TDS) by customer' : 'TDS Deducted'}><NumberInput value={f.tds_amount} onChange={(v) => setF({ ...f, tds_amount: v })} /></Field>
+        <Field label="TDS section">
+          <Select value={f.tds_section_id ?? ''} placeholder="No TDS" options={tdsOptions(meta?.tds_sections, f.tds_section_id)}
+            onChange={(e) => setF({ ...f, tds_section_id: e.target.value, ...split(e.target.value) })} />
+        </Field>
+        <Field label={kind === 'received' ? 'TDS deducted by customer' : 'TDS deducted'}
+          hint={rate ? `${rate}% of ${money(round2(round2(Math.min(Number(f.amount || 0) + Number(f.tds_amount || 0), doc.balance)) * share), doc.currency)} before GST` : undefined}>
+          <NumberInput value={f.tds_amount} onChange={(v) => setF({ ...f, tds_amount: v })} />
+        </Field>
         <Field label="Reference#"><Input value={f.reference} onChange={(e) => setF({ ...f, reference: e.target.value })} /></Field>
         {doc.currency !== doc.base_currency && doc.exchange_rate !== 1 && <Field label="Exchange Rate"><NumberInput value={f.exchange_rate} onChange={(v) => setF({ ...f, exchange_rate: v })} /></Field>}
       </div>

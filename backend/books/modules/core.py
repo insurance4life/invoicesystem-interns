@@ -27,6 +27,7 @@ def load_meta(req):
         'org': org, 'settings': settings, 'role': req.role, 'permissions': req.perms,
         'taxes': [parse_json(t, ['group_ids']) for t in all('SELECT * FROM taxes WHERE org_id = ? ORDER BY kind, rate, id', oid)],
         'payment_terms': all('SELECT * FROM payment_terms WHERE org_id = ? ORDER BY days, id', oid),
+        'tds_sections': all('SELECT * FROM tds_sections WHERE org_id = ? ORDER BY section, rate, id', oid),
         'currencies': all('SELECT * FROM currencies WHERE org_id = ? ORDER BY is_base DESC, code', oid),
         'accounts': all('SELECT id, code, name, type, parent_id, system_code, is_active, is_system FROM accounts WHERE org_id = ? ORDER BY type, code, name', oid),
         'users': all('''SELECT u.id, u.name, u.email, r.name AS role, ou.status FROM org_users ou JOIN users u ON u.id = ou.user_id

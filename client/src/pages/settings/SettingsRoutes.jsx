@@ -13,6 +13,7 @@ import Preferences from './Preferences.jsx';
 import Currencies from './Currencies.jsx';
 import OpeningBalances from './OpeningBalances.jsx';
 import Taxes from './Taxes.jsx';
+import TdsSections from './TdsSections.jsx';
 import GstSettings from './GstSettings.jsx';
 import NumberSeries from './NumberSeries.jsx';
 import EmailTemplates from './EmailTemplates.jsx';
@@ -44,6 +45,7 @@ export default function SettingsRoutes() {
       <Route path="currencies" element={<Currencies />} />
       <Route path="opening-balances" element={<OpeningBalances />} />
       <Route path="taxes" element={<Taxes />} />
+      <Route path="tds-sections" element={<TdsSections />} />
       <Route path="gst" element={<GstSettings />} />
       <Route path="number-series" element={<NumberSeries />} />
       <Route path="email-templates" element={<EmailTemplates />} />
