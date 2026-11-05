@@ -74,3 +74,11 @@ export const STATUS_LABELS = {
 export const statusLabel = (s) => STATUS_LABELS[s] || (s ? s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '');
 
 export const PAYMENT_MODES = ['Cash', 'Bank Transfer', 'Cheque', 'Credit Card', 'UPI', 'NEFT', 'RTGS', 'IMPS', 'Online Payment', 'Other'];
+
+// GST parts are written the way Indian tax invoices print them ("CGST @ 9%"); other taxes keep their own name.
+// Labels are built at display time from code and rate, so stored documents and GST reports are unchanged.
+export function taxLabel(t) {
+  const code = String(t?.code || '').toLowerCase();
+  if (code === 'cgst' || code === 'sgst' || code === 'igst') return `${code.toUpperCase()} @ ${Number(t.rate)}%`;
+  return t?.name || '';
+}

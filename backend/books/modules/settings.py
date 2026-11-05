@@ -977,7 +977,7 @@ def routes(r):  # noqa: C901
                 tables[name] = all(f'SELECT * FROM "{name}" WHERE org_id = ?{order}', org_id)
         audit(req, 'org', org_id, 'data backup exported')
         res = json_response({'format': 'openbooks-backup', 'version': 1, 'exported_at': now_iso(), 'org_id': org_id, 'tables': tables})
-        res['Content-Disposition'] = f'attachment; filename="openbooks-backup-{today()}.json"'
+        res['Content-Disposition'] = f'attachment; filename="beyondbooks-backup-{today()}.json"'
         return res
     def admin_only(req):
         # the backup holds every table of the org, including capability tokens and the outbox

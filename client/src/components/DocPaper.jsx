@@ -1,5 +1,5 @@
 // Printable document layout (invoice, quote, bill...). Used by the detail page and the print route.
-import { fmtMoney, fmtDate, statusLabel } from '../lib/format.js';
+import { fmtMoney, fmtDate, statusLabel, taxLabel } from '../lib/format.js';
 import { DOC_UI } from '../lib/docs.js';
 import { INDIAN_STATES } from '@shared/calc.js';
 
@@ -83,7 +83,7 @@ export default function DocPaper({ doc, org, settings }) {
               <td style={{ textAlign: 'right' }}>{Number(l.quantity)}{l.unit ? ` ${l.unit}` : ''}</td>
               <td style={{ textAlign: 'right' }}>{fmtMoney(l.rate, cur).replace(/^[^\d-]+/, '')}</td>
               {hasDiscount && <td style={{ textAlign: 'right' }}>{Number(l.discount) || ''}</td>}
-              {doc.tax_total > 0 && <td style={{ textAlign: 'right' }} className="small">{(l.tax_breakdown || []).map((t) => <div key={t.name}>{t.name}: {fmtMoney(t.amount, cur).replace(/^[^\d-]+/, '')}</div>)}</td>}
+              {doc.tax_total > 0 && <td style={{ textAlign: 'right' }} className="small">{(l.tax_breakdown || []).map((t) => <div key={t.name}>{taxLabel(t)}: {fmtMoney(t.amount, cur).replace(/^[^\d-]+/, '')}</div>)}</td>}
               <td style={{ textAlign: 'right' }}>{fmtMoney(l.amount, cur).replace(/^[^\d-]+/, '')}</td>
             </tr>
           ))}
@@ -99,7 +99,7 @@ export default function DocPaper({ doc, org, settings }) {
           <tbody>
             <tr><td style={{ border: 0 }}>Sub Total</td><td style={{ border: 0, textAlign: 'right' }}>{m(doc.subtotal)}</td></tr>
             {doc.discount_total > 0 && <tr><td style={{ border: 0 }}>Discount{doc.discount_type === 'percent' ? ` (${doc.discount_value}%)` : ''}</td><td style={{ border: 0, textAlign: 'right' }}>-{m(doc.discount_total)}</td></tr>}
-            {(doc.taxes || []).map((t) => <tr key={t.name}><td style={{ border: 0 }}>{t.name}</td><td style={{ border: 0, textAlign: 'right' }}>{m(t.amount)}</td></tr>)}
+            {(doc.taxes || []).map((t) => <tr key={t.name}><td style={{ border: 0 }}>{taxLabel(t)}</td><td style={{ border: 0, textAlign: 'right' }}>{m(t.amount)}</td></tr>)}
             {doc.shipping ? <tr><td style={{ border: 0 }}>Shipping Charges</td><td style={{ border: 0, textAlign: 'right' }}>{m(doc.shipping)}</td></tr> : null}
             {doc.adjustment ? <tr><td style={{ border: 0 }}>{doc.adjustment_label || 'Adjustment'}</td><td style={{ border: 0, textAlign: 'right' }}>{m(doc.adjustment)}</td></tr> : null}
             <tr><td style={{ border: 0, fontWeight: 700, borderTop: '1px solid #ddd' }}>Total</td><td style={{ border: 0, textAlign: 'right', fontWeight: 700, borderTop: '1px solid #ddd' }}>{m(doc.total)}</td></tr>

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Button, Field, NumberInput, Select, Textarea, Modal, Input } from '../../components/ui.jsx';
 import { DOC_UI } from '../../lib/docs.js';
-import { fmtDate, fmtMoney, statusLabel } from '../../lib/format.js';
+import { fmtDate, fmtMoney, statusLabel, taxLabel } from '../../lib/format.js';
 import { Shell, Notice, Loading, TestModeBanner } from './PublicShell.jsx';
 import { usePublic, publicRequest, formatAddress } from './publicApi.js';
 
@@ -110,7 +110,7 @@ export default function SharePage() {
                   <td className="small">{l.hsn_sac || ''}</td>
                   <td style={{ textAlign: 'right' }}>{l.quantity}{l.unit ? ` ${l.unit}` : ''}</td>
                   <td style={{ textAlign: 'right' }}>{money(l.rate, cur)}</td>
-                  <td className="small">{(l.tax_breakdown || []).map((t) => t.name).join(', ') || '—'}</td>
+                  <td className="small">{(l.tax_breakdown || []).map(taxLabel).join(', ') || '—'}</td>
                   <td style={{ textAlign: 'right' }}>{money(l.amount, cur)}</td>
                 </tr>
               ))}
@@ -126,7 +126,7 @@ export default function SharePage() {
           <div style={{ width: 320, maxWidth: '100%', fontSize: 13 }}>
             <TotalRow label="Subtotal" value={money(lineSubtotal, cur)} />
             {doc.discount_total > 0 && <TotalRow label="Discount" value={`- ${money(doc.discount_total, cur)}`} />}
-            {(doc.taxes || []).map((t) => <TotalRow key={t.name} label={t.name} value={money(t.amount, cur)} small />)}
+            {(doc.taxes || []).map((t) => <TotalRow key={t.name} label={taxLabel(t)} value={money(t.amount, cur)} small />)}
             {doc.shipping > 0 && <TotalRow label="Shipping" value={money(doc.shipping, cur)} />}
             {doc.adjustment !== 0 && doc.adjustment != null && <TotalRow label={doc.adjustment_label || 'Adjustment'} value={money(doc.adjustment, cur)} />}
             <TotalRow label="Total" value={money(doc.total, cur)} strong accent={accent} />

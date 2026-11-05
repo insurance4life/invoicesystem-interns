@@ -4,7 +4,7 @@ import { useApp } from '../../store.jsx';
 import { api } from '../../api.js';
 import { PageHeader, Button, Field, Input, Textarea, NumberInput, Select, Combo, AccountSelect, TaxSelect, Checkbox, Spinner, Modal } from '../../components/ui.jsx';
 import { DOC_UI, docUrl } from '../../lib/docs.js';
-import { today, PAYMENT_MODES } from '../../lib/format.js';
+import { today, PAYMENT_MODES, taxLabel } from '../../lib/format.js';
 import { computeDocument, dueDateFor, INDIAN_STATES, round2 } from '@shared/calc.js';
 import { X, Lightbulb } from 'lucide-react';
 
@@ -327,7 +327,7 @@ export default function DocForm({ type }) {
                 <span>-{money(calc.discount_total, doc.currency)}</span>
               </div>
             )}
-            {calc.taxes.map((t) => <div className="t-row" key={t.name}><span>{t.name} [{t.rate}%]</span><span>{money(t.amount, doc.currency)}</span></div>)}
+            {calc.taxes.map((t) => <div className="t-row" key={t.name}><span>{t.code === 'tax' ? `${t.name} [${t.rate}%]` : taxLabel(t)}</span><span>{money(t.amount, doc.currency)}</span></div>)}
             {prefs.allow_shipping !== false && !ui.noItems && (
               <div className="t-row"><span>Shipping Charges</span><NumberInput style={{ width: 110 }} value={doc.shipping} onChange={(v) => set('shipping', v)} /></div>
             )}

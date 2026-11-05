@@ -25,7 +25,7 @@ export default function DataBackup() {
       <Card title="Full backup" className="" >
         <p className="muted">A JSON file with every record of this organization: contacts, documents, payments, ledger entries, settings and more. Keep it somewhere safe.</p>
         <Button variant="primary" disabled={!canExport || busy === 'backup'} loading={busy === 'backup'}
-          onClick={() => run('backup', () => download('/data/backup', `openbooks-backup-${stamp}.json`))}>
+          onClick={() => run('backup', () => download('/data/backup', `beyondbooks-backup-${stamp}.json`))}>
           Download backup (JSON)
         </Button>
         <Note>User accounts and passwords are not included. Only this organization's data is.</Note>

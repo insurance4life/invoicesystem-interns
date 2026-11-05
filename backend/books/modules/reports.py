@@ -1290,6 +1290,10 @@ def rpt_tax_summary(req):
             inp.append({'name': e['name'], 'taxable': None, 'tax': r2(e['tax']), 'expense_tax': r2(e['tax'])})
     to = r2(sum_js(r['tax'] for r in out))
     ti = r2(sum_js(r['tax'] for r in inp))
+    # GST parts read the way tax invoices print them ("CGST @ 9%"); matching above still uses the stored names
+    for r in [*out, *inp]:
+        if str(r.get('code') or '').lower() in ('cgst', 'sgst', 'igst'):
+            r['name'] = f"{r['code'].upper()} @ {jsstr(r['rate'])}%"
     rows = [{'name': 'Output Tax (Sales)', '_kind': 'section'}, *[{**r, '_indent': 1} for r in out],
             {'name': 'Total Output Tax', 'tax': to, 'taxable': r2(sum_js(r['taxable'] for r in out)), '_kind': 'total'},
             {'name': 'Input Tax (Purchases & Expenses)', '_kind': 'section'}, *[{**r, '_indent': 1} for r in inp], {'name': 'Total Input Tax', 'tax': ti, '_kind': 'total'},

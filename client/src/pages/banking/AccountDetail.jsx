@@ -40,7 +40,7 @@ export default function AccountDetail() {
         </>}
       />
       <div className="bk-head card mb">
-        <div><div className="muted small">BALANCE IN OPENBOOKS</div><div className="bk-big">{money(a.balance, a.currency)}</div></div>
+        <div><div className="muted small">Balance in BeyondBooks</div><div className="bk-big">{money(a.balance, a.currency)}</div></div>
         <div><div className="muted small">AMOUNT IN BANK</div><div className="bk-big">{a.statement_balance == null ? '—' : money(a.statement_balance, a.currency)}</div>{a.statement_balance_date && <div className="muted small">as of {date(a.statement_balance_date)}</div>}</div>
         <div><div className="muted small">UNCATEGORIZED</div><div className="bk-big">{a.uncategorized}</div></div>
         <div><div className="muted small">LAST RECONCILED</div><div className="bk-big">{a.last_reconciled ? date(a.last_reconciled) : 'Never'}</div></div>
