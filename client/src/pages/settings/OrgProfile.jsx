@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../../store.jsx';
 import { api } from '../../api.js';
-import { Button, Card, Field, Input, Select, Modal } from '../../components/ui.jsx';
+import { Button, Card, Checkbox, Field, Input, Select, Modal } from '../../components/ui.jsx';
 import { INDIAN_STATES } from '@shared/calc.js';
 import { fmtDate } from '../../lib/format.js';
 import { SettingsPage, attempt, Note } from './common.jsx';
@@ -27,7 +27,8 @@ export default function OrgProfile() {
   const nav = useNavigate();
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [modal, setModal] = useState(null); // 'delete' | 'leave'
+  const [modal, setModal] = useState(null); // 'delete' | 'leave' | 'reset'
+  const [clearOpenings, setClearOpenings] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [busy, setBusy] = useState(false);
   const canEdit = can('settings', 'edit');
@@ -146,6 +147,15 @@ export default function OrgProfile() {
           <Button variant="secondary" onClick={() => setModal('leave')}>Leave organization</Button>
         </div>
         {isAdmin && can('settings', 'delete') && (
+          <div className="row between" style={{ marginBottom: 12 }}>
+            <div>
+              <div className="bold">Clear all transactions</div>
+              <Note>Start the books again. Settings, users, contacts, items, accounts and taxes stay.</Note>
+            </div>
+            <Button variant="danger" onClick={() => setModal('reset')}>Clear transactions</Button>
+          </div>
+        )}
+        {isAdmin && can('settings', 'delete') && (
           <div className="row between">
             <div>
               <div className="bold">Delete organization</div>
@@ -163,6 +173,22 @@ export default function OrgProfile() {
           <Button variant="danger" loading={busy} onClick={() => finish(() => api.post('/org/leave'), 'You have left the organization')}>Leave</Button>
         </>}>
           <p>Are you sure you want to leave <b>{org.name}</b>?</p>
+        </Modal>
+      )}
+
+      {modal === 'reset' && (
+        <Modal title="Clear all transactions" onClose={() => { setModal(null); setConfirmText(''); }} footer={<>
+          <Button onClick={() => { setModal(null); setConfirmText(''); }}>Cancel</Button>
+          <Button variant="danger" loading={busy} disabled={confirmText !== org.name}
+            onClick={() => finish(() => api.post('/org/reset-transactions', { confirm: confirmText, clear_opening_balances: clearOpenings }), 'Transactions cleared')}>Clear permanently</Button>
+        </>}>
+          <p>This permanently deletes every quote, order, invoice, bill, credit note, payment, expense, journal, bank transaction,
+            reconciliation, inventory adjustment, fixed asset and time entry in <b>{org.name}</b>, with their attachments and history.
+            Number series restart at 1 and the lock date is removed.</p>
+          <p>Kept: organization settings, users and roles, chart of accounts, contacts, items, taxes, TDS sections, projects, budgets and rules.</p>
+          <Checkbox label="Also clear opening balances (accounts, contacts and item stock)" checked={clearOpenings} onChange={setClearOpenings} />
+          <p className="mt">Download a backup first from Settings → Backup and Export if you may need this data. Type <b>{org.name}</b> to confirm.</p>
+          <Field label="Organization name"><Input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} /></Field>
         </Modal>
       )}
 

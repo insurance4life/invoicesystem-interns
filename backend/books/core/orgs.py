@@ -84,3 +84,49 @@ def create_org(user_id, data):
         create_default_accounts(org_id)
         return org_id
     return tx(_do)
+
+
+# ---------------------------------------------------------------- reset transactions
+OPENING_SOURCES = ('opening_balance', 'contact_opening', 'item_opening')
+# Activity, comments and attachments on these keep their meaning after a reset; everything else was about a transaction.
+SETUP_ENTITIES = ('org', 'user', 'role', 'contact', 'item', 'account', 'tax', 'tds_section', 'payment_term', 'currency', 'custom_field',
+                  'project', 'budget', 'price_list', 'bank_rule', 'workflow_rule', 'incoming_webhook', 'file', 'opening_balance')
+# Every table that holds transactions or their by-products. Child rows (document lines, allocations, journal lines,
+# deposit lines, depreciation) go with their parents through ON DELETE CASCADE.
+TRANSACTION_TABLES = ('documents', 'payments', 'payment_links', 'credit_applications', 'refunds', 'journals', 'expenses', 'bank_txns',
+                      'bank_deposit_payments', 'bank_statement_lines', 'reconciliations', 'inventory_adjustments', 'fixed_assets',
+                      'fixed_asset_depreciation', 'currency_adjustments', 'time_entries', 'reminder_log', 'emails', 'workflow_logs')
+
+
+def reset_transactions(org_id, keep_opening_balances=True):
+    """Delete every transaction of one org and keep its setup: settings, users and roles, chart of accounts, contacts,
+    items, taxes, projects, budgets and rules. Number series restart at 1 and the lock date is cleared, since nothing is
+    left to protect. Opening balances (accounts, contacts, item stock) stay unless asked otherwise. Returns the number
+    of rows removed per table and the attachment paths to delete from disk once the transaction commits."""
+    from books.core.db import all as db_all, get  # noqa: PLC0415
+    marks = ','.join('?' * len(SETUP_ENTITIES))
+    removed = {}
+    for t in TRANSACTION_TABLES:
+        removed[t] = run(f'DELETE FROM {t} WHERE org_id = ?', org_id)
+    keep = ','.join('?' * len(OPENING_SOURCES))
+    if keep_opening_balances:
+        removed['ledger'] = run(f'DELETE FROM ledger WHERE org_id = ? AND src_type NOT IN ({keep})', org_id, *OPENING_SOURCES)
+        run('UPDATE ledger SET reconciliation_id = NULL WHERE org_id = ?', org_id)
+        removed['stock_moves'] = run("DELETE FROM stock_moves WHERE org_id = ? AND src_type != 'item_opening'", org_id)
+    else:
+        removed['ledger'] = run('DELETE FROM ledger WHERE org_id = ?', org_id)
+        removed['stock_moves'] = run('DELETE FROM stock_moves WHERE org_id = ?', org_id)
+        run('UPDATE items SET opening_stock = 0 WHERE org_id = ?', org_id)
+    paths = [f['path'] for f in db_all(f'''SELECT path FROM files WHERE org_id = ? AND entity_type IS NOT NULL AND entity_type != ''
+                                           AND entity_type NOT IN ({marks})''', org_id, *SETUP_ENTITIES)]
+    removed['files'] = run(f"DELETE FROM files WHERE org_id = ? AND entity_type IS NOT NULL AND entity_type != '' AND entity_type NOT IN ({marks})",
+                           org_id, *SETUP_ENTITIES)
+    removed['comments'] = run(f'DELETE FROM comments WHERE org_id = ? AND entity_type NOT IN ({marks})', org_id, *SETUP_ENTITIES)
+    removed['activity'] = run(f'DELETE FROM activity WHERE org_id = ? AND entity_type NOT IN ({marks})', org_id, *SETUP_ENTITIES)
+    # written whole: save_org_settings merges nested keys, which would keep the old period locks
+    cur = json.loads((get('SELECT settings FROM orgs WHERE id = ?', org_id) or {}).get('settings') or '{}')
+    series = {**DEFAULT_SETTINGS['series'], **(cur.get('series') if isinstance(cur.get('series'), dict) else {})}
+    cur['series'] = {k: {**(v if isinstance(v, dict) else {}), 'next': 1} for k, v in series.items()}
+    cur['locks'] = {}
+    run('UPDATE orgs SET settings = ?, lock_date = NULL WHERE id = ?', _j(cur), org_id)
+    return {k: v for k, v in removed.items() if v}, paths

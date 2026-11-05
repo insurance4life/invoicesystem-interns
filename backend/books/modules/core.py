@@ -1,10 +1,10 @@
 """Org profile, lookups ("meta"), global search, activity, comments, outbox (port of modules/core.js)."""
 import json
 
-from books.core.db import all, get, insert, update, run, parse_json
+from books.core.db import all, get, insert, update, run, parse_json, tx
 from books.core.router import bad, forbidden
 from books.core.util import org_settings, save_org_settings, clean_body, audit, like_pattern, canon_date
-from books.core.orgs import check_sizes as check_org_sizes, delete_org as remove_org
+from books.core.orgs import check_sizes as check_org_sizes, delete_org as remove_org, reset_transactions
 from books.core.auth import perm, can, MODULES
 from books.core.entities import assert_entity_access, entity_module, visible_rows
 from books.core.documents import DOC_TYPES
@@ -110,6 +110,25 @@ def routes(r):
         remove_org(req.org['id'])
         return {'ok': True}
     r.delete('/org', perm('settings', 'delete'), delete_org)
+
+    def reset_org(req):
+        """Start the books again from a clean ledger while keeping the organization's setup."""
+        if req.role != 'Admin':
+            raise bad('Only an admin can clear the transactions')
+        body = req.body if isinstance(req.body, dict) else {}
+        if not isinstance(body.get('confirm'), str) or body['confirm'].strip() != req.org['name']:
+            raise bad('Type the organization name to confirm')
+        keep = body.get('clear_opening_balances') is not True
+        removed, paths = tx(lambda: reset_transactions(req.org['id'], keep))
+        from django.conf import settings as dj  # noqa: PLC0415
+        for rel in paths:
+            try:
+                dj.DATA_DIR.joinpath(*str(rel).split('/')).unlink()
+            except OSError:
+                pass  # already gone: the row was the only thing left to remove
+        audit(req, 'org', req.org['id'], 'transactions cleared', 'opening balances kept' if keep else 'opening balances cleared')
+        return {'ok': True, 'removed': removed}
+    r.post('/org/reset-transactions', perm('settings', 'delete'), reset_org)
 
     def leave_org(req):
         admins = get("SELECT COUNT(*) n FROM org_users ou JOIN roles r ON r.id = ou.role_id WHERE ou.org_id = ? AND r.name = 'Admin' AND ou.status='active'", req.org['id'])['n']
