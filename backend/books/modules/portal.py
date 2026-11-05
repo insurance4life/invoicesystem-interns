@@ -5,7 +5,7 @@ import re
 import secrets
 
 from books.core.db import all, get, insert, update, tx, parse_json
-from books.core.router import bad, not_found
+from books.core.router import bad, not_found, rate_limit, client_ip
 from books.core.util import audit, org_settings, token
 from books.core.calc import round2
 from books.core.auth import perm
@@ -99,11 +99,14 @@ def _public_org(org):
 def _public_doc(d):
     out = dict(d)
     # only custom fields marked "Show on PDF" are customer-facing; the rest stay internal
-    if isinstance(out.get('custom_fields'), dict):
+    raw = out.get('custom_fields')
+    if isinstance(raw, dict) and raw:
         module = str(out.get('doc_type') or '').replace('recurring_', '')
         shown = {r['field_key'] for r in all('SELECT field_key FROM custom_fields WHERE org_id = ? AND module = ? AND show_in_pdf = 1',
                                                  out.get('org_id'), module)}
-        out['custom_fields'] = {k: v for k, v in out['custom_fields'].items() if k in shown}
+        out['custom_fields'] = {k: v for k, v in raw.items() if k in shown}
+    else:
+        out['custom_fields'] = {}  # any other shape cannot be filtered, so nothing of it is public
     for k in SHARE_HIDDEN:
         out.pop(k, None)
     if out.get('lines'):
@@ -156,10 +159,21 @@ def _org_of(id_):
     return org
 
 
-def _respond_to_quote(tk, action, body):
-    d0 = _find_shared(tk)
+def _limit_public(req, key):
+    # public writes need no session, so they are bounded per client address and per token
+    rate_limit(('public-ip', client_ip(req)), 60, 60, 'Too many requests. Try again in a minute.')
+    rate_limit(('public-token', key), 20, 3600, 'Too many requests for this link. Try again later.')
+
+
+def _respond_to_quote(req, action):
+    tk = req.params['token']
+    _limit_public(req, tk)
+    d0 = _find_shared(tk)  # the token is checked before the body is read
+    body = _body(req)
     if d0['doc_type'] != 'quote':
         raise bad('Only quotes can be accepted or declined online')
+    if get('SELECT 1 AS ok FROM documents WHERE source_doc_id = ? AND org_id = ? LIMIT 1', d0['id'], d0['org_id']):
+        raise bad('This quote has already been converted and can no longer be changed online')
     org = _org_of(d0['org_id'])
     d = load_doc(org['id'], d0['id'], with_lines=False)
     if d['status'] != 'sent':
@@ -223,9 +237,12 @@ def _share_get(req):
 
 
 def _share_pay(req):
+    _limit_public(req, req.params['token'])
+    d0 = _find_shared(req.params['token'])  # token first: an unknown link costs nothing
+    if not isinstance(req.body, dict):
+        raise bad('Invalid payment request')
     body = _body(req)
     _assert_no_card_data(req.body)
-    d0 = _find_shared(req.params['token'])
     if d0['doc_type'] != 'invoice':
         raise bad('Only invoices can be paid online')
     org = _org_of(d0['org_id'])
@@ -305,12 +322,14 @@ def _portal_get(req):
 
 
 def _portal_comment(req):
+    _limit_public(req, req.params['token'])
     c = _find_portal_contact(req.params['token'])
     body = _body(req)
     text = _js_trim(_str_or_empty(body.get('text')))[:2000]
     if not text:
         raise bad('Comment cannot be empty')
-    d = get('SELECT id FROM documents WHERE id = ? AND contact_id = ? AND org_id = ?', num_or_none(body.get('document_id')), c['id'], c['org_id'])
+    d = get("SELECT id FROM documents WHERE id = ? AND contact_id = ? AND org_id = ? AND status NOT IN ('draft', 'pending_approval', 'void')",
+            num_or_none(body.get('document_id')), c['id'], c['org_id'])
     if not d:
         raise not_found('Document')
     insert('comments', {'org_id': c['org_id'], 'entity_type': 'document', 'entity_id': d['id'], 'user_id': None,
@@ -333,9 +352,12 @@ def _pay_get(req):
 
 
 def _pay_pay(req):
+    _limit_public(req, req.params['token'])
+    pl = _find_link(req.params['token'])
+    if not isinstance(req.body, dict):
+        raise bad('Invalid payment request')
     body = _body(req)
     _assert_no_card_data(req.body)
-    pl = _find_link(req.params['token'])
     org = _org_of(pl['org_id'])
     if _link_status(pl) != 'active':
         raise bad(f'This payment link is {jsstr(_link_status(pl))}')
@@ -364,8 +386,8 @@ def _pay_pay(req):
 def public_routes(pub):
     # ----- share links -----
     pub.get('/share/:token', _share_get)
-    pub.post('/share/:token/accept', lambda req: _respond_to_quote(req.params['token'], 'accept', _body(req)))
-    pub.post('/share/:token/decline', lambda req: _respond_to_quote(req.params['token'], 'decline', _body(req)))
+    pub.post('/share/:token/accept', lambda req: _respond_to_quote(req, 'accept'))
+    pub.post('/share/:token/decline', lambda req: _respond_to_quote(req, 'decline'))
     # ----- test-mode online payment against an invoice -----
     pub.post('/share/:token/pay', _share_pay)
     # ----- customer portal -----

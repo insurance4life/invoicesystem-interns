@@ -3,7 +3,7 @@ import json
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, HttpError
-from books.core.util import audit, round2, today, assert_unlocked, assert_owned
+from books.core.util import audit, round2, today, assert_unlocked, assert_owned, like_pattern, assert_account_types, PURCHASE_LINE_TYPES, BANK_TYPES
 from books.core.auth import perm
 from books.core.jsutil import jsnum, jsstr, to_int, truthy
 from books.core.ledger import post, unpost, sys_account, tax_account
@@ -58,6 +58,28 @@ def _post_expense(org, e):
     post(org['id'], 'expense', e['id'], date=e['date'], number=e.get('reference'), contact_id=e.get('vendor_id'), lines=lines)
 
 
+def _same(a, b):
+    try:
+        return abs(float(a if a not in (None, '') else 0) - float(b if b not in (None, '') else 0)) < 0.005
+    except (TypeError, ValueError):
+        return str(a if a is not None else '') == str(b if b is not None else '')
+
+
+def _same_value(a, b):
+    if isinstance(a, (list, dict)) or isinstance(b, (list, dict)):
+        def norm(v):
+            if isinstance(v, str):
+                try:
+                    v = json.loads(v)
+                except ValueError:
+                    return v
+            return json.dumps(v, sort_keys=True, default=str)
+        return norm(a) == norm(b)
+    if isinstance(a, bool) or isinstance(b, bool):
+        return truthy(a) == truthy(b)
+    return _same(a, b)
+
+
 def save_expense(req, body, id=None):  # noqa: A002
     org = req.org
     body = body or {}
@@ -74,6 +96,14 @@ def save_expense(req, body, id=None):  # noqa: A002
             assert_unlocked(org, o['date'], 'expense')
         if existing and not existing.get('is_profile'):
             assert_unlocked(org, existing['date'], 'expense')
+        if existing and existing.get('invoice_id'):
+            # The invoice recharged these figures; changing them would split the ledger from the bill (delete refuses too).
+            # Only the reference and notes stay editable.
+            for f in FIELDS:
+                if f in ('reference', 'notes', 'recurrence'):
+                    continue
+                if f in o and not _same_value(o[f], existing.get(f)):
+                    raise bad('This expense has been invoiced. Remove it from the invoice before changing its amount, account, tax or customer.')
         if isinstance(o.get('splits'), list) and not o['splits']:
             o['splits'] = None
         merged = {**(existing or {}), **o, 'splits': o['splits'] if 'splits' in o else (existing or {}).get('splits')}
@@ -81,6 +111,10 @@ def save_expense(req, body, id=None):  # noqa: A002
                      + [s.get('account_id') for s in (o.get('splits') or []) if isinstance(s, dict)], 'account')
         assert_owned(org['id'], 'contacts', [o.get('vendor_id'), o.get('customer_id')], 'contact')
         assert_owned(org['id'], 'projects', [o.get('project_id')], 'project')
+        # the expense debits a cost or asset account and credits a bank/cash/card account; anything else is journal work
+        assert_account_types(req, org['id'], [o.get('account_id')] + [s.get('account_id') for s in (o.get('splits') or []) if isinstance(s, dict)],
+                             PURCHASE_LINE_TYPES, 'an expense account')
+        assert_account_types(req, org['id'], [o.get('paid_through_id')], BANK_TYPES + ('other_current_liability',), 'a paid-through account')
         if not merged.get('splits') and not merged.get('account_id'):
             raise bad('Choose an expense account')
         if not merged.get('paid_through_id'):
@@ -96,6 +130,8 @@ def save_expense(req, body, id=None):  # noqa: A002
         o['tax_amount'] = c['tax_total']
         if o.get('splits'):
             o['splits'] = _j(o['splits'])
+        if 'recurrence' in o and o['recurrence'] is not None and not isinstance(o['recurrence'], dict):
+            raise bad('Recurrence must be an object')  # a bare string or list would break the hourly job
         if isinstance(o.get('recurrence'), dict):
             rec = o['recurrence']
             o['recurrence'] = _j(validate_recurrence({'frequency': 'monthly', 'every': 1, 'start_date': o['date'], 'next_date': rec.get('start_date') or o['date'], 'status': 'active', **rec}))
@@ -165,9 +201,10 @@ def routes(r):
             where.append('e.is_billable = 1')
         if q.get('unbilled'):
             where.append('e.is_billable = 1 AND e.invoice_id IS NULL')
-        if q.get('q'):
+        pat = like_pattern(q.get('q'))
+        if pat:
             where.append('(e.reference ILIKE ? OR e.notes ILIKE ? OR v.display_name ILIKE ? OR a.name ILIKE ?)')
-            p += [f"%{q['q']}%"] * 4
+            p += [pat] * 4
         return [parse_json(e, ['splits', 'recurrence']) for e in all(f'''SELECT e.*, a.name AS account_name, pt.name AS paid_through_name, v.display_name AS vendor_name, c.display_name AS customer_name
                 FROM expenses e LEFT JOIN accounts a ON a.id = e.account_id LEFT JOIN accounts pt ON pt.id = e.paid_through_id
                 LEFT JOIN contacts v ON v.id = e.vendor_id LEFT JOIN contacts c ON c.id = e.customer_id

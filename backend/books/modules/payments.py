@@ -1,7 +1,7 @@
 """/api/payments/:kind (received | made), /api/credits, /api/refunds (port of modules/payments.js)."""
 from books.core.db import all
 from books.core.router import forbidden, not_found
-from books.core.util import audit, org_settings
+from books.core.util import audit, org_settings, like_pattern
 from books.core.auth import can
 from books.core.jsutil import to_int, to_fixed2, jsstr, truthy
 from books.core.payments import (save_payment, delete_payment, load_payment, payment_unused, apply_credits, delete_credit_application,
@@ -38,9 +38,10 @@ def routes(r):
         if q.get('mode'):
             where.append('p.mode = ?')
             p.append(q['mode'])
-        if q.get('q'):
+        pat = like_pattern(q.get('q'))
+        if pat:
             where.append('(p.number ILIKE ? OR p.reference ILIKE ? OR c.display_name ILIKE ?)')
-            p += [f"%{q['q']}%"] * 3
+            p += [pat] * 3
         rows = all(f'''SELECT p.*, c.display_name AS contact_name, a.name AS account_name,
             (SELECT string_agg(d.number, ', ' ORDER BY pa.id) FROM payment_allocations pa JOIN documents d ON d.id = pa.document_id WHERE pa.payment_id = p.id) AS documents
           FROM payments p LEFT JOIN contacts c ON c.id = p.contact_id LEFT JOIN accounts a ON a.id = p.account_id

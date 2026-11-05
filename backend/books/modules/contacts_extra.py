@@ -115,6 +115,8 @@ def _statement_email(req):
     org = req.org
     body = body_of(req)
     c = load_contact(org['id'], sql_num(req.params['id']))
+    if not can(req, 'sales' if c.get('type') == 'customer' else 'purchases', 'view'):
+        raise forbidden()
     to = js_str(body.get('to')) or (c.get('email') or '')
     if not to:
         raise bad('Enter the recipient email address')
@@ -237,6 +239,9 @@ def _import_contacts(req):
                     continue
                 raise bad(f'A {typ} named "{p["display_name"]}" already exists')
 
+            if p['opening'] and not can(req, 'accountant', 'edit'):
+                raise forbidden('Opening balances post to the ledger and need accountant access')
+
             def _do(p=p, raw=raw):
                 cid = insert('contacts', db_row(p['fields']))
                 if p['opening']:
@@ -272,14 +277,17 @@ def _assert_merge_rights(req, org, cid):
     marks = ','.join('?' * len(sales_types))
     has = get(f"""SELECT
         (SELECT COUNT(*) FROM documents WHERE org_id = ? AND contact_id = ? AND doc_type IN ({marks}))
-          + (SELECT COUNT(*) FROM payments WHERE org_id = ? AND contact_id = ? AND type = 'received') AS sales,
+          + (SELECT COUNT(*) FROM payments WHERE org_id = ? AND contact_id = ? AND type = 'received')
+          + (SELECT COUNT(*) FROM payment_links WHERE org_id = ? AND contact_id = ?)
+          + (SELECT COUNT(*) FROM document_lines l JOIN documents d ON d.id = l.document_id WHERE d.org_id = ? AND l.customer_id = ?) AS sales,
+        (SELECT COUNT(*) FROM projects WHERE org_id = ? AND customer_id = ?) AS projects,
         (SELECT COUNT(*) FROM documents WHERE org_id = ? AND contact_id = ? AND doc_type NOT IN ({marks}))
           + (SELECT COUNT(*) FROM payments WHERE org_id = ? AND contact_id = ? AND type = 'made')
           + (SELECT COUNT(*) FROM expenses WHERE org_id = ? AND (vendor_id = ? OR customer_id = ?)) AS purchases,
         (SELECT COUNT(*) FROM bank_txns WHERE org_id = ? AND contact_id = ?) AS banking,
         (SELECT COUNT(*) FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id WHERE j.org_id = ? AND jl.contact_id = ?) AS accountant""",
-              o, cid, *sales_types, o, cid, o, cid, *sales_types, o, cid, o, cid, cid, o, cid, o, cid)
-    for module in ('sales', 'purchases', 'banking', 'accountant'):
+              o, cid, *sales_types, o, cid, o, cid, o, cid, o, cid, o, cid, *sales_types, o, cid, o, cid, cid, o, cid, o, cid)
+    for module in ('sales', 'purchases', 'banking', 'accountant', 'projects'):
         if has[module] and not can(req, module, 'edit'):
             raise forbidden(f'Merging moves {module} records, which needs {module} edit access')
 
@@ -341,7 +349,8 @@ def _merge(req):
             run('UPDATE contacts SET linked_contact_id = ? WHERE linked_contact_id = ? AND org_id = ?', target['id'], s['id'], org['id'])
             run('DELETE FROM contacts WHERE id = ?', s['id'])
             audit(req, 'contact', target['id'], 'merged', s['display_name'])
-        return load_contact(org['id'], target['id'])
+        from books.modules.contacts import contact_out  # noqa: PLC0415
+        return contact_out(req, load_contact(org['id'], target['id']))
     return tx(_do)
 
 

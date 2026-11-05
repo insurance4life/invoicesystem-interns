@@ -40,8 +40,11 @@ export const api = {
 export function downloadCsv(filename, rows, columns) {
   const cols = columns || Object.keys(rows[0] || {}).map((k) => ({ key: k, label: k }));
   const esc = (v) => {
-    const s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    let s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    // A cell starting with = + - @ tab or CR runs as a formula in spreadsheet apps; plain numbers are left alone.
+    // Line breaks inside a cell start a new line in some importers, so every line is neutralised, not just the first.
+    s = s.split(/(\r\n|\r|\n)/).map((part) => (/^[=+\-@\t]/.test(part) && !/^-?\d+(\.\d+)?$/.test(part) ? `'${part}` : part)).join('');
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const csv = [cols.map((c) => esc(c.label)).join(','), ...rows.map((r) => cols.map((c) => esc(typeof c.value === 'function' ? c.value(r) : r[c.key])).join(','))].join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });

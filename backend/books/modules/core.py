@@ -6,7 +6,7 @@ from books.core.router import bad, forbidden
 from books.core.util import org_settings, save_org_settings, clean_body, audit, like_pattern, canon_date
 from books.core.orgs import check_sizes as check_org_sizes, delete_org as remove_org
 from books.core.auth import perm, can, MODULES
-from books.core.entities import assert_entity_access, entity_module
+from books.core.entities import assert_entity_access, entity_module, visible_rows
 from books.core.documents import DOC_TYPES
 
 COMMENT_MAX = 5000
@@ -73,7 +73,8 @@ def routes(r):
         if isinstance(fields.get('address'), dict):
             fields['address'] = json.dumps(fields['address'], separators=(',', ':'), ensure_ascii=False)
         # the org row is read on every request in this org, so its free-text and image fields are bounded
-        for k, n in (('logo', 400_000), ('address', 2000), ('website', 500)):
+        for k, n in (('logo', 400_000), ('address', 2000), ('website', 500), ('name', 200), ('industry', 100), ('country', 100), ('state', 100),
+                     ('currency', 10), ('timezone', 64), ('date_format', 20), ('gstin', 20), ('phone', 40), ('email', 254)):
             if fields.get(k) is not None and len(str(fields[k])) > n:
                 raise bad(f'{k.capitalize()} is too large')
         if fields.get('lock_date'):
@@ -155,8 +156,13 @@ def routes(r):
     # ---------- activity / audit trail ----------
     def activity(req):
         qy = req.query
-        if qy.get('entity_type') and qy.get('entity_id'):
-            assert_entity_access(req, qy['entity_type'], _eid(qy['entity_id']), 'view')
+        eid = None
+        if qy.get('entity_id'):
+            eid = _eid(qy['entity_id'])
+            if eid is None:
+                raise bad('A valid record id is required')  # one id, used for both the check and the filter
+        if qy.get('entity_type') and eid is not None:
+            assert_entity_access(req, qy['entity_type'], eid, 'view')
         elif not can(req, 'reports', 'view'):
             raise forbidden()
         where = ['a.org_id = ?']
@@ -166,7 +172,7 @@ def routes(r):
             p.append(qy['entity_type'])
         if qy.get('entity_id'):
             where.append('a.entity_id = ?')
-            p.append(int(float(qy['entity_id'])))
+            p.append(eid)
         if qy.get('user_id'):
             where.append('a.user_id = ?')
             p.append(int(float(qy['user_id'])))
@@ -180,8 +186,8 @@ def routes(r):
             limit = min(int(float(qy.get('limit') or 100)) or 100, 1000)
         except ValueError:
             limit = 100
-        return all(f'''SELECT a.*, u.name AS user_name FROM activity a LEFT JOIN users u ON u.id = a.user_id WHERE {' AND '.join(where)}
-                       ORDER BY a.id DESC LIMIT ?''', *p, limit)
+        return visible_rows(req, all(f'''SELECT a.*, u.name AS user_name FROM activity a LEFT JOIN users u ON u.id = a.user_id WHERE {' AND '.join(where)}
+                       ORDER BY a.id DESC LIMIT ?''', *p, limit))
     r.get('/activity', activity)
 
     # ---------- comments ----------
@@ -195,7 +201,7 @@ def routes(r):
     def comments(req):
         et, eid = req.query.get('entity_type'), _eid(req.query.get('entity_id'))
         assert_entity_access(req, et, eid, 'view')
-        return all('SELECT * FROM comments WHERE org_id = ? AND entity_type = ? AND entity_id = ? ORDER BY id DESC', req.org['id'], et, eid)
+        return all('SELECT * FROM comments WHERE org_id = ? AND entity_type = ? AND entity_id = ? ORDER BY id DESC LIMIT 500', req.org['id'], et, eid)
     r.get('/comments', comments)
 
     def add_comment(req):
@@ -215,7 +221,13 @@ def routes(r):
     r.post('/comments', add_comment)
 
     def del_comment(req):
-        run('DELETE FROM comments WHERE id = ? AND org_id = ? AND user_id = ?', req.params['id'], req.org['id'], req.user['id'])
+        c = get('SELECT * FROM comments WHERE id = ? AND org_id = ?', _eid(req.params['id']), req.org['id'])
+        if c and c['user_id'] is None:
+            # customer and system comments have no author account: anyone who can edit the record may remove them
+            assert_entity_access(req, c['entity_type'], c['entity_id'], 'edit')
+            run('DELETE FROM comments WHERE id = ? AND org_id = ?', c['id'], req.org['id'])
+        elif c:
+            run('DELETE FROM comments WHERE id = ? AND org_id = ? AND user_id = ?', c['id'], req.org['id'], req.user['id'])
         return {'ok': True}
     r.delete('/comments/:id', del_comment)
 

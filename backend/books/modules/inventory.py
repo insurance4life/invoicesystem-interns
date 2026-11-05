@@ -9,7 +9,7 @@ import re
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, HttpError
-from books.core.util import audit, assert_unlocked, next_number, org_settings, save_org_settings, today, cap_list
+from books.core.util import audit, assert_unlocked, next_number, org_settings, save_org_settings, today, cap_list, like_pattern
 from books.core.auth import perm, can
 from books.core.ledger import post, unpost, sys_account, avg_cost, stock_on_hand, clear_stock, add_stock_move
 from books.core.calc import round2, sum_js, ACCOUNT_CLASS
@@ -138,7 +138,7 @@ def body_of(req):
 
 def like_pat(q):
     """'%q%' for LIKE/ILIKE. Backslash is escaped because PostgreSQL's LIKE treats it as an escape character."""
-    return '%' + str(q).replace('\\', '\\\\') + '%'
+    return like_pattern(q) or '%'
 
 
 # ---------------------------------------------------------------- schema-level constants

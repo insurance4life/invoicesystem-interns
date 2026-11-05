@@ -555,6 +555,9 @@ def routes(r):  # noqa: C901
 
     def _invite_locked(req, email, role, name, temp, temp_hash):
         check_send_quota(req.org, email)  # before any account is created, not after
+        cap = int(os.environ.get('OPENBOOKS_MAX_PENDING_INVITES') or 100)
+        if get("SELECT COUNT(*) AS n FROM org_users WHERE org_id = ? AND status = 'invited'", req.org['id'])['n'] >= cap:
+            raise bad(f'This organization already has {cap} pending invitations. Remove some first.')
 
         def _do():
             existing = get('SELECT id, name FROM users WHERE lower(email) = lower(?)', email)
@@ -624,9 +627,9 @@ def routes(r):  # noqa: C901
                 raise bad('Status must be active or inactive')
             if m['status'] == 'invited' and b['status'] == 'active':
                 raise bad('This person has not accepted the invitation yet')
-            if b['status'] == 'active' and m['status'] != 'active' and 'role_id' not in patch:
-                # Reactivation restores the member's role: the caller must be able to grant it, as for a role change.
-                cur_role = role_in(req.org['id'], m['role_id'])
+            if b['status'] == 'active' and m['status'] != 'active':
+                # Reactivation restores a role: the caller must be able to grant it, whether or not role_id was resent.
+                cur_role = role_in(req.org['id'], patch.get('role_id', m['role_id']))
                 if cur_role:
                     assert_can_grant(req, role_perms(cur_role))
             patch['status'] = b['status']
@@ -856,10 +859,10 @@ def routes(r):  # noqa: C901
         t = tax_row(req.org['id'], req.params['id'])
         o = req.org['id']
         tid = t['id']
-        line_use = get('''SELECT (SELECT COUNT(*) FROM document_lines WHERE tax_id = ?)
+        line_use = get('''SELECT (SELECT COUNT(*) FROM document_lines l JOIN documents d ON d.id = l.document_id WHERE l.tax_id = ? AND d.org_id = ?)
           + (SELECT COUNT(*) FROM expenses WHERE org_id = ? AND tax_id = ?)
           + (SELECT COUNT(*) FROM items WHERE org_id = ? AND (tax_id = ? OR purchase_tax_id = ?))
-          + (SELECT COUNT(*) FROM contacts WHERE org_id = ? AND tax_id = ?) AS n''', tid, o, tid, o, tid, tid, o, tid)['n']
+          + (SELECT COUNT(*) FROM contacts WHERE org_id = ? AND tax_id = ?) AS n''', tid, o, o, tid, o, tid, tid, o, tid)['n']
         n = line_use + len(groups_containing(o, tid))
         if n:
             raise bad(f'This tax is used in {n} place(s) (transactions, items, expenses or groups). Deactivate it instead.')

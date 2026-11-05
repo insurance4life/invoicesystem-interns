@@ -105,6 +105,8 @@ def post(org_id, src_type, src_id, date=None, number=None, contact_id=None, line
     def _do():
         recon = all('SELECT account_id, debit, credit, date, reconciliation_id FROM ledger WHERE src_type = ? AND src_id = ? AND org_id = ? AND reconciliation_id IS NOT NULL',
                     src_type, src_id, org_id)
+        before = all('SELECT account_id, debit, credit, date FROM ledger WHERE src_type = ? AND src_id = ? AND org_id = ? AND reconciliation_id IS NULL',
+                     src_type, src_id, org_id)
         moved = []  # cleared lines that keep their amounts but would change date
         run('DELETE FROM ledger WHERE src_type = ? AND src_id = ? AND org_id = ?', src_type, src_id, org_id)
         merged = []
@@ -135,6 +137,15 @@ def post(org_id, src_type, src_id, date=None, number=None, contact_id=None, line
             reconciliation_id = kept['reconciliation_id'] if kept else None
             if kept and kept['date'] != date:
                 moved.append(reconciliation_id)
+            if not kept:
+                same = next((i for i, x in enumerate(before) if x['account_id'] == int(l['account_id']) and x['date'] == date
+                             and abs(x['debit'] - l['debit']) < 0.005 and abs(x['credit'] - l['credit']) < 0.005), -1)
+                if same >= 0:
+                    before.pop(same)  # an unchanged uncleared line is not new
+                elif get("SELECT 1 AS ok FROM reconciliations WHERE org_id = ? AND account_id = ? AND status = 'completed' AND end_date >= ? LIMIT 1",
+                         org_id, l['account_id'], date):
+                    # a completed reconciliation signed off this account's balance up to its end date
+                    raise bad(f'{date} falls inside a completed bank reconciliation for this account. Undo the reconciliation or use a later date.')
             cid = l.get('contact_id') if l.get('contact_id') is not None else contact_id
             insert('ledger', {
                 'org_id': org_id, 'date': date, 'src_type': src_type, 'src_id': src_id, 'number': number or None,

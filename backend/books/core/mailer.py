@@ -52,7 +52,7 @@ def _send_smtp(email_id, frm, reply_to, to, cc, subject, body):
 
 
 def _recipients(*fields):
-    return [a for f in fields for a in re.split(r'[,;]', str(f or '')) if a.strip()]
+    return [a for f in fields for a in re.split(r'[,;\s]+', str(f or '')) if a.strip()]
 
 
 def check_send_quota(org, to, cc=None):
@@ -68,6 +68,10 @@ def check_send_quota(org, to, cc=None):
     uid = CURRENT_USER_ID.get()
     if uid and get('SELECT COUNT(*) AS n FROM emails WHERE sent_by = ? AND created_at >= ?', uid, since)['n'] >= limit:
         raise bad(f'You have sent {limit} emails in the last hour. Try again later.')
+    # accounts and organizations can be created freely, so the relay also has one budget for the whole instance
+    total = int(os.environ.get('OPENBOOKS_EMAIL_GLOBAL_HOURLY_LIMIT') or 2000)
+    if get('SELECT COUNT(*) AS n FROM emails WHERE created_at >= ?', since)['n'] >= total:
+        raise bad('Too many emails have been sent in the last hour. Try again later.')
 
 
 def send_email(org, to, subject, body, entity_type=None, entity_id=None, cc=None, stored_body=None):

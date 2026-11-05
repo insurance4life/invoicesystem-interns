@@ -4,13 +4,14 @@ import builtins
 import datetime
 import json
 import math
+import os
 import random
 import re
 import time
 
 from books.core.db import all, get, run, update, tx, safe, parse_json
 from books.core.router import bad, not_found, forbidden, HttpError
-from books.core.util import audit, round2, assert_unlocked, clean_body, cap_list
+from books.core.util import audit, round2, assert_unlocked, clean_body, cap_list, like_pattern, canon_date
 from books.core.auth import perm, can
 from books.core.jsutil import jsstr, truthy, to_int, now_iso, today
 from books.core.ledger import post, unpost, sys_account, account_class, account_in_use
@@ -348,7 +349,7 @@ def save_txn(req, body, id=None):  # noqa: A002
                 raise bad('Choose the account to transfer to' if direction == 'out' else 'Choose the account the money came from')
             if to_acc == acct['id']:
                 raise bad('Transfer accounts must be different')
-            _check_account(org['id'], to_acc, 'transfer account')
+            _check_target(req, org['id'], to_acc, 'transfer account')
             offset = None
             splits = None
         elif splits:
@@ -359,7 +360,7 @@ def save_txn(req, body, id=None):  # noqa: A002
             if abs(total - amount) > 0.005:
                 raise bad(f'Split amounts ({jsstr(total)}) must add up to {jsstr(amount)}')
             for s in splits:
-                _check_account(org['id'], s.get('offset_account_id'))
+                _check_target(req, org['id'], s.get('offset_account_id'))
                 if _js_number(s.get('offset_account_id')) == acct['id']:
                     raise bad('Choose a different account')
             offset = None
@@ -371,7 +372,7 @@ def save_txn(req, body, id=None):  # noqa: A002
                 raise bad('Choose an account')
             if offset == acct['id']:
                 raise bad('Choose a different account')
-            _check_account(org['id'], offset)
+            _check_target(req, org['id'], offset)
             to_acc = None
         contact = get('SELECT id FROM contacts WHERE id = ? AND org_id = ?', _id(b.get('contact_id')), org['id']) if truthy(b.get('contact_id')) else None
         if truthy(b.get('contact_id')) and not contact:
@@ -419,11 +420,50 @@ def _load_line(org_id, id):  # noqa: A002
     return parse_json(l, ['suggestion'])
 
 
-def _decorate_line(org_id, l):
+# Which module owns each matchable ledger source: its numbers, contacts and amounts are that module's data.
+_SRC_MODULES = {'payment_received': ('sales',), 'salesreceipt': ('sales',), 'payment_made': ('purchases',), 'expense': ('purchases',),
+                'journal': ('accountant',), 'bank_txn': ('banking',), 'refund': ('sales', 'purchases')}
+
+
+def _may_view_src(req, typ):
+    return req is None or builtins.all(can(req, m, 'view') for m in _SRC_MODULES.get(typ, ('settings',)))  # (all is db.all here)
+
+
+def _redact_src_rows(req, obj):
+    """Blank the number, description and contact of rows whose source the caller cannot view (other modules' data)."""
+    for v in (obj.values() if isinstance(obj, dict) else ()):
+        if isinstance(v, list):
+            for x in v:
+                if isinstance(x, dict) and x.get('src_type') and not _may_view_src(req, x['src_type']):
+                    x.update({'number': None, 'description': None, 'contact_name': None})
+    return obj
+
+
+def _recon_out(req, rid):
+    return _redact_src_rows(req, recon_detail(org_id=req.org['id'], id=rid))
+
+
+def _check_target(req, org_id, id, label='account'):  # noqa: A002
+    """A bank transaction's counter account. Receivables, payables and stock move only through documents (or an
+    accountant's journal), so posting to them here would change customer, vendor or stock balances silently."""
+    a = _check_account(org_id, id, label)
+    if a and a['type'] in ('accounts_receivable', 'accounts_payable', 'stock') and not can(req, 'accountant', 'edit'):
+        raise forbidden(f"{a['name']} can only be changed through documents or an accountant's journal")
+    return a
+
+
+def _line_out(req, l):
+    return _decorate_line(org_id=req.org['id'], l=l, req=req)
+
+
+def _decorate_line(org_id, l, req=None):
     parse_json(l, ['suggestion'])
     l['deposit'] = round2(l['amount']) if l['amount'] > 0 else 0
     l['withdrawal'] = round2(-l['amount']) if l['amount'] < 0 else 0
-    if truthy(l.get('matched_type')) and truthy(l.get('matched_id')):
+    if truthy(l.get('matched_type')) and truthy(l.get('matched_id')) and not _may_view_src(req, l['matched_type']):
+        l['matched_number'] = None
+        l['matched_contact'] = None
+    elif truthy(l.get('matched_type')) and truthy(l.get('matched_id')):
         s = _source_number(org_id, l['matched_type'], l['matched_id'])
         l['matched_number'] = _or((s or {}).get('number'), None)
         if s and truthy(s.get('contact_id')):
@@ -611,6 +651,12 @@ def import_lines(req, account_id, body):
         raise bad('Nothing to import')
     if len(rows) > MAX_IMPORT_ROWS:
         raise bad(f'Import at most {MAX_IMPORT_ROWS} rows at a time')
+    org_quota = int(os.environ.get('OPENBOOKS_MAX_ORG_STATEMENT_LINES') or 1_000_000)
+    if get('SELECT COUNT(*) AS n FROM bank_statement_lines WHERE org_id = ?', org['id'])['n'] + len(rows) > org_quota:
+        raise bad(f'This organization already holds close to {org_quota} statement lines. Delete old ones before importing more.')
+    quota = int(os.environ.get('OPENBOOKS_MAX_STATEMENT_LINES') or 200_000)
+    if get('SELECT COUNT(*) AS n FROM bank_statement_lines WHERE org_id = ? AND account_id = ?', org['id'], acct['id'])['n'] + len(rows) > quota:
+        raise bad(f'This account already holds close to {quota} statement lines. Delete old ones before importing more.')
     mp = _or(body.get('mapping'), {})
     fmt = _or(body.get('date_format'), None) or _or(_nn(_key(mp, 'date_format')), None) or 'dmy'
 
@@ -702,7 +748,7 @@ def _is_taken(org_id, typ, id, except_line):  # noqa: A002
                        LIMIT 1""", org_id, typ, id, except_line or 0))
 
 
-def match_suggestions(org_id, line):
+def match_suggestions(org_id, line, req=None):
     amt = _abs2(line['amount'])
     net = amt if line['amount'] > 0 else -amt
     frm, to = _add_days(line['date'], -7), _add_days(line['date'], 7)
@@ -714,7 +760,7 @@ def match_suggestions(org_id, line):
     line_day = _parse_day(line['date'])
     matches = []
     for r in rows:
-        if _is_taken(org_id, r['src_type'], r['src_id'], line['id']):
+        if _is_taken(org_id, r['src_type'], r['src_id'], line['id']) or not _may_view_src(req, r['src_type']):
             continue
         m = {'kind': 'transaction', 'matched_type': r['src_type'], 'matched_id': r['src_id'], 'label': _LABEL.get(r['src_type']) or r['src_type'],
              'number': r['number'], 'date': r['date'], 'amount': amt}
@@ -731,13 +777,14 @@ def match_suggestions(org_id, line):
     matches.sort(key=lambda x: 0 if _isnan(x['days_apart']) else x['days_apart'])
     doc_type = 'invoice' if line['amount'] > 0 else 'bill'
     docs = []
-    for d in all("""SELECT d.id, d.number, d.date, d.due_date, d.total, d.balance, d.contact_id, c.display_name AS contact_name FROM documents d
+    show_docs = req is None or can(req, 'sales' if doc_type == 'invoice' else 'purchases', 'view')
+    for d in [] if not show_docs else all("""SELECT d.id, d.number, d.date, d.due_date, d.total, d.balance, d.contact_id, c.display_name AS contact_name FROM documents d
                     LEFT JOIN contacts c ON c.id = d.contact_id WHERE d.org_id = ? AND d.doc_type = ? AND d.status = 'open' AND ABS(d.balance - ?) < 0.005
                     ORDER BY d.date, d.id LIMIT 20""", org_id, doc_type, amt):
         docs.append({'kind': doc_type, f'{doc_type}_id': d['id'], 'label': 'Invoice' if doc_type == 'invoice' else 'Bill', 'number': d['number'],
                      'date': d['date'], 'due_date': d['due_date'], 'amount': d['balance'], 'total': d['total'], 'contact_name': d['contact_name'],
                      'contact_id': d['contact_id']})
-    return {'line': _decorate_line(org_id, dict(line)), 'matches': matches, 'documents': docs}
+    return {'line': _decorate_line(org_id, dict(line), req), 'matches': matches, 'documents': docs}
 
 
 def _set_line(line_id, status, matched_type=None, matched_id=None):
@@ -764,6 +811,7 @@ def match_line(req, line, body):
                 raise bad('Only deposits can be matched to invoices')
             if not is_inv and not line['amount'] < 0:
                 raise bad('Only withdrawals can be matched to bills')
+            _need(req, 'sales' if is_inv else 'purchases')  # before the lookup, so its messages reveal nothing
             d = get('SELECT * FROM documents WHERE id = ? AND org_id = ? AND doc_type = ?', _id(_or(body.get('invoice_id'), body.get('bill_id'))),
                     org['id'], 'invoice' if is_inv else 'bill')
             if not d:
@@ -788,6 +836,8 @@ def match_line(req, line, body):
         mid = _js_number(body.get('matched_id', UNDEF))
         if typ not in MATCHABLE or _isnan(mid) or not mid:
             raise bad('Choose a transaction to match')
+        if not _may_view_src(req, typ):
+            raise forbidden()
         net = _source_net(org['id'], typ, mid, line['account_id'])
         if not net:
             raise bad('That transaction does not touch this bank account')
@@ -1080,9 +1130,11 @@ def routes(r):
                         WHERE l.account_id = ? AND l.org_id = ? AND l.date >= ? AND l.date <= ? ORDER BY l.date, l.id""", a['id'], req.org['id'], frm, to):
             run_ = round2(run_ + sgn * (l['debit'] - l['credit']))
             bt = get('SELECT txn_type FROM bank_txns WHERE id = ?', l['src_id']) if l['src_type'] == 'bank_txn' else None
+            seen = _may_view_src(req, l['src_type'])
             rows.append({
-                'id': l['id'], 'date': l['date'], 'src_type': l['src_type'], 'src_id': l['src_id'], 'number': l['number'], 'description': l['description'],
-                'contact_name': l['contact_name'], 'txn_type': _or((bt or {}).get('txn_type'), None), 'deposit': round2(l['debit']),
+                'id': l['id'], 'date': l['date'], 'src_type': l['src_type'], 'src_id': l['src_id'],
+                'number': l['number'] if seen else None, 'description': l['description'] if seen else None,
+                'contact_name': l['contact_name'] if seen else None, 'txn_type': _or((bt or {}).get('txn_type'), None), 'deposit': round2(l['debit']),
                 'withdrawal': round2(l['credit']), 'balance': run_, 'reconciled': l['recon_status'] == 'completed',
                 'reconciliation_id': l['reconciliation_id'],
                 'matched': bool(get("SELECT id FROM bank_statement_lines WHERE org_id = ? AND matched_type = ? AND matched_id = ? AND status IN ('categorized','matched') LIMIT 1",
@@ -1111,7 +1163,12 @@ def routes(r):
                 LEFT JOIN accounts ta ON ta.id = t.to_account_id LEFT JOIN contacts c ON c.id = t.contact_id
                 WHERE {' AND '.join(where)} ORDER BY t.date DESC, t.id DESC""", *p)]
     r.get('/banking/transactions', V, list_txns)
-    r.get('/banking/transactions/:id', V, lambda req: load_txn(req.org['id'], req.params['id']))
+    def get_txn(req):
+        t = load_txn(req.org['id'], req.params['id'])
+        if not can(req, 'sales', 'view'):  # deposited customer payments are sales records
+            t['payments'] = [{**p, 'number': None, 'contact_name': None} for p in t.get('payments') or []]
+        return t
+    r.get('/banking/transactions/:id', V, get_txn)
 
     def create_txn(req):
         t = save_txn(req, req.body)
@@ -1160,16 +1217,17 @@ def routes(r):
         if q.get('to'):
             where.append('date <= ?')
             p.append(q['to'])
-        if q.get('q'):
+        pat = like_pattern(q.get('q'))
+        if pat:
             where.append('(description ILIKE ? OR reference ILIKE ? OR payee ILIKE ?)')
-            p += [f"%{q['q']}%"] * 3
-        return [_decorate_line(req.org['id'], l) for l in all(f"SELECT * FROM bank_statement_lines WHERE {' AND '.join(where)} ORDER BY date DESC, id DESC", *p)]
+            p += [pat] * 3
+        return [_line_out(req, l) for l in all(f"SELECT * FROM bank_statement_lines WHERE {' AND '.join(where)} ORDER BY date DESC, id DESC", *p)]
     r.get('/banking/accounts/:id/statement-lines', V, statement_lines)
 
-    r.get('/banking/statement-lines/:id', V, lambda req: _decorate_line(req.org['id'], _load_line(req.org['id'], req.params['id'])))
+    r.get('/banking/statement-lines/:id', V, lambda req: _line_out(req, _load_line(req.org['id'], req.params['id'])))
 
     def suggest(req):
-        return match_suggestions(req.org['id'], _load_line(req.org['id'], req.params['id']))
+        return match_suggestions(req.org['id'], _load_line(req.org['id'], req.params['id']), req)
     r.post('/banking/statement-lines/:id/match-suggestions', V, suggest)
     r.get('/banking/statement-lines/:id/match-suggestions', V, suggest)
 
@@ -1177,21 +1235,21 @@ def routes(r):
         line = _load_line(req.org['id'], req.params['id'])
         res = match_line(req, line, req.body or {})
         audit(req, 'bank_statement_line', line['id'], 'matched', f"{_js_string(res['matched_type'])} #{jsstr(res['matched_id'])}")
-        return {**res, 'line': _decorate_line(req.org['id'], _load_line(req.org['id'], line['id']))}
+        return {**res, 'line': _line_out(req, _load_line(req.org['id'], line['id']))}
     r.post('/banking/statement-lines/:id/match', E, match_route)
 
     def categorize_route(req):
         line = _load_line(req.org['id'], req.params['id'])
         res = categorize_line(req, line, req.body or {})
         audit(req, 'bank_statement_line', line['id'], 'categorized', f"{_js_string(res['matched_type'])} #{jsstr(res['matched_id'])}")
-        return {**res, 'line': _decorate_line(req.org['id'], _load_line(req.org['id'], line['id']))}
+        return {**res, 'line': _line_out(req, _load_line(req.org['id'], line['id']))}
     r.post('/banking/statement-lines/:id/categorize', E, categorize_route)
 
     def uncategorize_route(req):
         line = _load_line(req.org['id'], req.params['id'])
         uncategorize_line(req, line)
         audit(req, 'bank_statement_line', line['id'], 'uncategorized')
-        return _decorate_line(req.org['id'], _load_line(req.org['id'], line['id']))
+        return _line_out(req, _load_line(req.org['id'], line['id']))
     r.post('/banking/statement-lines/:id/uncategorize', E, uncategorize_route)
 
     def exclude_route(req):
@@ -1200,7 +1258,7 @@ def routes(r):
             raise bad('Only uncategorized lines can be excluded')
         _set_line(line['id'], 'excluded')
         audit(req, 'bank_statement_line', line['id'], 'excluded')
-        return _decorate_line(req.org['id'], _load_line(req.org['id'], line['id']))
+        return _line_out(req, _load_line(req.org['id'], line['id']))
     r.post('/banking/statement-lines/:id/exclude', E, exclude_route)
 
     def restore_route(req):
@@ -1209,7 +1267,7 @@ def routes(r):
             raise bad('Only excluded lines can be restored')
         _set_line(line['id'], 'uncategorized')
         audit(req, 'bank_statement_line', line['id'], 'restored')
-        return _decorate_line(req.org['id'], _load_line(req.org['id'], line['id']))
+        return _line_out(req, _load_line(req.org['id'], line['id']))
     r.post('/banking/statement-lines/:id/restore', E, restore_route)
 
     def delete_line_route(req):
@@ -1317,7 +1375,9 @@ def routes(r):
     # ---- undeposited funds ----
     def undeposited(req):
         ud = sys_account(req.org['id'], 'undeposited_funds')
-        return [{**p, 'deposit_amount': round2(p['deposit_amount'])} for p in all(
+        sales = can(req, 'sales', 'view')  # the rows are customer payments
+        return [{**p, 'deposit_amount': round2(p['deposit_amount']),
+                 **({} if sales else {'number': None, 'reference': None, 'contact_name': None})} for p in all(
             """SELECT p.id, p.number, p.date, p.amount, p.mode, p.reference, p.currency, p.contact_id, c.display_name AS contact_name,
                  (SELECT COALESCE(SUM(l.debit - l.credit),0) FROM ledger l WHERE l.src_type = 'payment_received' AND l.src_id = p.id AND l.account_id = ?) AS deposit_amount
                FROM payments p LEFT JOIN contacts c ON c.id = p.contact_id
@@ -1379,7 +1439,7 @@ def routes(r):
         a = bank_account(req.org['id'], req.params['id'])
         out = []
         for x in all('SELECT * FROM reconciliations WHERE org_id = ? AND account_id = ? ORDER BY end_date DESC, id DESC', req.org['id'], a['id']):
-            d = recon_detail(req.org['id'], x['id']) if x['status'] == 'in_progress' else None
+            d = _recon_out(req, x['id']) if x['status'] == 'in_progress' else None
             out.append({**x, 'cleared_count': get('SELECT COUNT(*) AS n FROM ledger WHERE reconciliation_id = ?', x['id'])['n'],
                         'difference': d['difference'] if d else 0})
         return out
@@ -1388,8 +1448,8 @@ def routes(r):
     def start_recon(req):
         a = bank_account(req.org['id'], req.params['id'])
         b = _obj(req.body or {})
-        start_date = b.get('start_date')
-        end_date = b.get('end_date')
+        start_date = canon_date(b['start_date'], 'start date') if truthy(b.get('start_date')) else b.get('start_date')
+        end_date = canon_date(b['end_date'], 'end date') if truthy(b.get('end_date')) else b.get('end_date')
         closing_balance = b.get('closing_balance', UNDEF)
         if not truthy(end_date):
             raise bad('Enter the statement end date')
@@ -1407,16 +1467,19 @@ def routes(r):
                                           'opening_balance': round2(prev['closing_balance']) if prev else 0,
                                           'closing_balance': round2(_js_number(closing_balance)), 'status': 'in_progress'})
         audit(req, 'reconciliation', rid, 'started', f"{a['name']} to {_js_string(end_date)}")
-        return recon_detail(req.org['id'], rid)
+        return _recon_out(req, rid)
     r.post('/banking/accounts/:id/reconciliations', C, start_recon)
 
-    r.get('/banking/reconciliations/:id', V, lambda req: recon_detail(req.org['id'], req.params['id']))
+    r.get('/banking/reconciliations/:id', V, lambda req: _recon_out(req, req.params['id']))
 
     def update_recon(req):
         rc = _load_recon(req.org['id'], req.params['id'])
         if rc['status'] != 'in_progress':
             raise bad('Only an in-progress reconciliation can be changed')
         o = clean_body(_obj(req.body or {}), ['start_date', 'end_date', 'closing_balance'])
+        for k in ('start_date', 'end_date'):
+            if truthy(o.get(k)):
+                o[k] = canon_date(o[k], k.replace('_', ' '))
         if o.get('closing_balance') is not None:
             o['closing_balance'] = round2(_js_number(o['closing_balance']))
         if truthy(o.get('end_date')):
@@ -1425,7 +1488,7 @@ def routes(r):
                 raise bad(f"Choose an end date after {prev['end_date']}")
             run('UPDATE ledger SET reconciliation_id = NULL WHERE reconciliation_id = ? AND date > ?', rc['id'], o['end_date'])
         update('reconciliations', rc['id'], o)
-        return recon_detail(req.org['id'], rc['id'])
+        return _recon_out(req, rc['id'])
     r.put('/banking/reconciliations/:id', E, update_recon)
 
     def toggle_recon(req):
@@ -1436,7 +1499,8 @@ def routes(r):
         raw = _or(b.get('ledger_ids'), [])
         if not isinstance(raw, list):
             raise TypeError('ledger_ids.map is not a function')
-        ids = [n for n in (_js_number(x) for x in raw) if not _isnan(n) and n]
+        cap_list(raw, 'ledger lines')
+        ids = list(dict.fromkeys(n for n in (_js_number(x) for x in raw) if not _isnan(n) and n))
         cleared = b.get('cleared', UNDEF) is not False
 
         def _do():
@@ -1450,18 +1514,18 @@ def routes(r):
                     raise bad('Transaction is already reconciled')
                 run('UPDATE ledger SET reconciliation_id = ? WHERE id = ?', rc['id'] if cleared else None, lid)
         tx(_do)
-        return recon_detail(req.org['id'], rc['id'])
+        return _recon_out(req, rc['id'])
     r.post('/banking/reconciliations/:id/toggle', E, toggle_recon)
 
     def complete_recon(req):
-        d = recon_detail(req.org['id'], req.params['id'])
+        d = _recon_out(req, req.params['id'])
         if d['status'] != 'in_progress':
             raise bad('This reconciliation is already completed')
         if abs(d['difference']) > 0.005:
             raise bad(f"The difference must be zero to complete the reconciliation (currently {jsstr(d['difference'])})")
         update('reconciliations', d['id'], {'status': 'completed', 'completed_at': now_iso()})
         audit(req, 'reconciliation', d['id'], 'completed', f"{d['account']['name']} to {d['end_date']}")
-        return recon_detail(req.org['id'], d['id'])
+        return _recon_out(req, d['id'])
     r.post('/banking/reconciliations/:id/complete', E, complete_recon)
 
     def undo(req):

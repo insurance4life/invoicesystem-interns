@@ -3,7 +3,7 @@ import json
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found
-from books.core.util import audit, round2, today, org_settings, assert_owned, assert_unlocked
+from books.core.util import audit, round2, today, org_settings, assert_owned, assert_unlocked, like_pattern, clean_custom_fields
 from books.core.auth import perm, can
 from books.core.calc import ACCOUNT_CLASS
 from books.core.documents import DOC_TYPES
@@ -64,8 +64,8 @@ def _clean(body, org, is_new):
     for f in FIELDS:
         if f in body:
             o[f] = None if body[f] == '' else body[f]
-    if isinstance(o.get('custom_fields'), (dict, list)):
-        o['custom_fields'] = json.dumps(o['custom_fields'], separators=(',', ':'), ensure_ascii=False)
+    if 'custom_fields' in o:
+        o['custom_fields'] = clean_custom_fields(o['custom_fields'])
     if is_new:
         if o.get('sales_account_id') is None:
             o['sales_account_id'] = sys_account(org['id'], 'sales')
@@ -111,9 +111,10 @@ def routes(r):
             where.append('i.is_sellable = 1')
         if q.get('purchasable'):
             where.append('i.is_purchasable = 1')
-        if q.get('q'):
+        pat = like_pattern(q.get('q'))
+        if pat:
             where.append('(i.name ILIKE ? OR i.sku ILIKE ? OR i.description ILIKE ? OR i.hsn_sac ILIKE ?)')
-            p += [f"%{q['q']}%"] * 4
+            p += [pat] * 4
         rows = all(f'''SELECT i.*, (SELECT COALESCE(SUM(qty),0) FROM stock_moves s WHERE s.item_id = i.id) AS stock_on_hand
                        FROM items i WHERE {' AND '.join(where)} ORDER BY lower(i.name), i.id''', *p)
         if status == 'low_stock':

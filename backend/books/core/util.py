@@ -179,7 +179,7 @@ def audit(req, entity_type, entity_id, action, detail=''):
             log.error('event listener failed: %s', e)
 
 
-_OWNED_TABLES = {'accounts', 'contacts', 'items', 'documents', 'projects'}
+_OWNED_TABLES = {'accounts', 'contacts', 'items', 'documents', 'projects', 'taxes', 'payment_terms'}
 
 
 def assert_owned(org_id, table, ids, label):
@@ -212,6 +212,46 @@ def cap_list(value, label, limit=MAX_COLLECTION):
     if isinstance(value, (list, dict)) and len(value) > limit:
         raise bad(f'At most {limit} {label} are allowed')
     return value
+
+
+BANK_TYPES = ('bank', 'credit_card', 'cash', 'payment_clearing')
+# Accounts a purchase-side line (bill, vendor credit, expense) may debit: costs, stock and other assets bought.
+PURCHASE_LINE_TYPES = ('expense', 'cost_of_goods_sold', 'other_expense', 'stock', 'fixed_asset', 'other_asset', 'other_current_asset')
+SALES_LINE_TYPES = ('income', 'other_income')
+
+
+def assert_account_types(req, org_id, ids, allowed, label):
+    """400 unless every chosen account is of an allowed type. Choosing any other account (bank, equity, control
+    accounts) is a journal entry, so it is left to accountant:edit holders."""
+    from books.core.auth import can  # noqa: PLC0415 (auth imports util)
+    ids = [i for i in ids if i not in (None, '')]
+    if not ids or (req is not None and can(req, 'accountant', 'edit')):
+        return
+    for i in ids:
+        a = get('SELECT type, name FROM accounts WHERE id = ? AND org_id = ?', i, org_id)
+        if a and a['type'] not in allowed:
+            raise bad(f"{a['name']} cannot be used as {label} here; ask an accountant to post to it")
+
+
+CUSTOM_FIELDS_MAX = 16_000
+
+
+def clean_custom_fields(v):
+    """Custom field values are a JSON object (field key -> value) of bounded size; they are read on every view,
+    including public share links."""
+    if v in (None, '', {}):
+        return None
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            raise bad('Custom fields must be an object') from None
+    if not isinstance(v, dict):
+        raise bad('Custom fields must be an object')
+    s = json.dumps(v, separators=(',', ':'), ensure_ascii=False)
+    if len(s) > CUSTOM_FIELDS_MAX:
+        raise bad('Custom fields are too large')
+    return s
 
 
 def like_pattern(text, max_len=100):

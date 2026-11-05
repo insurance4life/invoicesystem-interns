@@ -4,10 +4,12 @@ import json
 import logging
 
 from books.core.db import all, get, run, insert, update, tx, parse_json
-from books.core.router import bad, not_found, HttpError
-from books.core.util import round2, token, next_number, org_settings, assert_unlocked, assert_owned, cap_list
+from books.core.router import bad, not_found, HttpError, forbidden
+from books.core.util import (round2, token, next_number, org_settings, assert_unlocked, assert_owned, cap_list, assert_account_types,
+                             SALES_LINE_TYPES, PURCHASE_LINE_TYPES, clean_custom_fields, BANK_TYPES)
 from books.core.jsutil import jsnum, jsstr, today, now_iso, truthy, to_int
 from books.core.calc import compute_document, due_date_for, add_days
+from books.core.auth import can
 from books.core.ledger import post, unpost, sys_account, tax_account, avg_cost, clear_stock, add_stock_move
 
 DOC_TYPES = {
@@ -196,7 +198,16 @@ def save_document(req, type_, body, id=None):  # noqa: A002
             raise bad('Add at least one line item')
         assert_owned(org['id'], 'items', [l.get('item_id') for l in raw_lines], 'item')
         assert_owned(org['id'], 'accounts', [l.get('account_id') for l in raw_lines] + [body.get('account_id')], 'account')
-        assert_owned(org['id'], 'projects', [body.get('project_id')], 'project')
+        assert_owned(org['id'], 'projects', [body.get('project_id')] + [l.get('project_id') for l in raw_lines], 'project')
+        assert_owned(org['id'], 'taxes', [l.get('tax_id') for l in raw_lines], 'tax')
+        assert_owned(org['id'], 'contacts', [l.get('customer_id') for l in raw_lines], 'customer')
+        assert_owned(org['id'], 'payment_terms', [body.get('payment_term_id')], 'payment term')
+        # a chosen line account must suit the side; other accounts are journal work (accountant:edit)
+        assert_account_types(req, org['id'], [l.get('account_id') for l in raw_lines],
+                             SALES_LINE_TYPES if cfg['side'] == 'sales' else PURCHASE_LINE_TYPES, 'a line account')
+        rec = body.get('recurrence') if cfg.get('profile') else None
+        if isinstance(rec, dict) and rec.get('auto_send') and not can(req, cfg['side'] if cfg['side'] == 'sales' else 'purchases', 'edit'):
+            raise forbidden('Sending generated documents automatically needs edit access')
         if not existing:
             assert_owned(org['id'], 'documents', [body.get('source_doc_id')], 'source document')
         items = {i['id']: i for i in all('SELECT * FROM items WHERE org_id = ?', org['id'])}
@@ -241,7 +252,7 @@ def save_document(req, type_, body, id=None):  # noqa: A002
             'notes': body.get('notes'), 'terms': body.get('terms'),
             'billing_address': addr('billing_address'), 'shipping_address': addr('shipping_address'),
             'salesperson': body.get('salesperson'), 'project_id': body.get('project_id') or None,
-            'custom_fields': _j(body['custom_fields']) if truthy(body.get('custom_fields')) else None,
+            'custom_fields': clean_custom_fields(body.get('custom_fields')),
             'delivery_date': body.get('delivery_date') or None,
             'account_id': body.get('account_id') or None, 'payment_mode': body.get('payment_mode') or None,
             'recurrence': _j(_norm_recurrence(body.get('recurrence', {}), date, (existing or {}).get('recurrence'))) if cfg.get('profile') else None,
@@ -249,6 +260,9 @@ def save_document(req, type_, body, id=None):  # noqa: A002
         }
         if type_ == 'salesreceipt' and not fields['account_id']:
             fields['account_id'] = sys_account(org['id'], 'undeposited_funds')
+        if type_ == 'salesreceipt':
+            # the receipt debits this account, so it must be where money is received
+            assert_account_types(req, org['id'], [fields['account_id']], BANK_TYPES, 'the deposit account')
 
         doc_id = id
         if existing and (fields['currency'] != existing.get('currency') or round(jsnum(fields['exchange_rate']), 6) != round(jsnum(existing.get('exchange_rate') or 1), 6)) \
@@ -319,7 +333,8 @@ def _credit_limit_warning(org, doc, contact):
 
 # An entry is linked only while unbilled and only to an invoice of its own customer (or one with no customer).
 _UNBILLED_EXPENSE = ("invoice_id IS NULL AND (customer_id IS NULL OR customer_id = (SELECT contact_id FROM documents WHERE id = ?))")
-_UNBILLED_TIME = ("invoice_id IS NULL AND project_id IN (SELECT p.id FROM projects p WHERE p.org_id = ? AND "
+_UNBILLED_TIME = ("invoice_id IS NULL AND billable = 1 AND approval_status = 'approved' AND timer_started_at IS NULL AND "
+                  "project_id IN (SELECT p.id FROM projects p WHERE p.org_id = ? AND "
                   "(p.customer_id IS NULL OR p.customer_id = (SELECT contact_id FROM documents WHERE id = ?)))")
 
 
@@ -343,10 +358,12 @@ def _link_billables(org_id, doc_id, lines):
     for l in lines:
         if l.get('src_type') == 'time' and l.get('src_id'):
             _link_time(org_id, doc_id, l['src_id'])
+    tids = []
     for l in lines:
         if l.get('src_type') == 'time_entries' and isinstance(l.get('src_ids'), list):
-            for tid in cap_list(l['src_ids'], 'time entries'):
-                _link_time(org_id, doc_id, tid)
+            tids.extend(l['src_ids'])
+    for tid in cap_list(list(dict.fromkeys(tids)), 'time entries'):  # one budget for the whole document, not per line
+        _link_time(org_id, doc_id, tid)
 
 
 FREQUENCIES = ('daily', 'weekly', 'monthly', 'yearly')
@@ -683,9 +700,11 @@ def convert_document(req, type_, id, to, body=None):  # noqa: A002
     doc = save_document(req, to, payload)['doc']
     mark = {'quote': 'invoiced' if to == 'invoice' else None, 'salesorder': 'invoiced' if to == 'invoice' else None,
             'purchaseorder': 'billed', 'deliverychallan': 'invoiced'}.get(type_)
-    if mark:
+    # Marking the source invoiced/billed/accepted is an edit of it; without that right the copy is still made.
+    may_edit_src = can(req, 'sales' if DOC_TYPES[type_]['side'] == 'sales' else 'purchases', 'edit')
+    if mark and may_edit_src:
         update('documents', src['id'], {'status': mark})
-    if type_ == 'quote' and to == 'salesorder':
+    if type_ == 'quote' and to == 'salesorder' and may_edit_src:
         update('documents', src['id'], {'status': 'accepted'})
     return doc
 

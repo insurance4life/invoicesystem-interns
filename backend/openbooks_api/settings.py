@@ -24,7 +24,7 @@ DEBUG = os.environ.get('DJANGO_DEBUG', '0') == '1'
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 
 INSTALLED_APPS = ['books']
-MIDDLEWARE = []
+MIDDLEWARE = ['books.security_headers.SecurityHeadersMiddleware']
 ROOT_URLCONF = 'openbooks_api.urls'
 WSGI_APPLICATION = 'openbooks_api.wsgi.application'
 TEMPLATES = []

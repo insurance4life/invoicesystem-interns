@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 
@@ -51,13 +52,18 @@ def verify_password(pw, stored):
     return hmac.compare_digest(_scrypt(pw, salt).hex(), h)
 
 
-def credential_version(password_hash):
-    """Short fingerprint of the stored password hash. Tokens carry it, so changing the password ends older sessions."""
-    return hashlib.sha256(str(password_hash or '').encode()).hexdigest()[:16]
+def credential_version(password_hash, epoch=0):
+    """Short fingerprint of the stored password hash and the user's session epoch. Tokens carry it, so changing the
+    password or signing out (which bumps the epoch) ends older sessions."""
+    raw = str(password_hash or '') if not epoch else f'{password_hash}|{epoch}'
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def user_token(user_id, password_hash):
-    return sign_token({'uid': user_id, 'pv': credential_version(password_hash)})
+def user_token(user_id, password_hash, epoch=0):
+    return sign_token({'uid': user_id, 'pv': credential_version(password_hash, epoch)})
+
+
+_QUERY_TOKEN_PATH = re.compile(r'/?files/\d+/download')
 
 
 def _sig(body):
@@ -90,11 +96,16 @@ ACTIONS = ['view', 'create', 'edit', 'delete', 'approve']
 
 def require_user(req):
     auth = req.headers.get('authorization') or ''
-    p = verify_token(auth[7:] if auth.startswith('Bearer ') else req.query.get('token'))
+    if auth.startswith('Bearer '):
+        tok = auth[7:]
+    else:
+        # A token in the URL leaks through logs, history and Referer, so it is accepted only for <a href> file downloads.
+        tok = req.query.get('token') if req.method == 'GET' and _QUERY_TOKEN_PATH.fullmatch(req.path or '') else None
+    p = verify_token(tok)
     if not p:
         raise HttpError(401, 'Please sign in')
-    user = get('SELECT id, name, email, default_org_id, theme, password_hash FROM users WHERE id = ?', p.get('uid'))
-    if not user or not hmac.compare_digest(str(p.get('pv') or ''), credential_version(user.pop('password_hash'))):
+    user = get('SELECT id, name, email, default_org_id, theme, password_hash, session_epoch FROM users WHERE id = ?', p.get('uid'))
+    if not user or not hmac.compare_digest(str(p.get('pv') or ''), credential_version(user.pop('password_hash'), user.pop('session_epoch') or 0)):
         raise HttpError(401, 'Please sign in')
     req.user = user
     CURRENT_USER_ID.set(user['id'])

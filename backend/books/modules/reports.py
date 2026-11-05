@@ -20,6 +20,7 @@ from django.db import transaction
 
 from books.core.db import all, get, table_exists, column_names
 from books.core.router import bad, HttpError
+from books.core.entities import visible_rows
 from books.core.util import round2, today
 from books.core.auth import perm, can
 from books.core.jsutil import jsstr, jsnum, num_or_none, truthy
@@ -317,6 +318,44 @@ def pl_by_account(org_id, frm, to, basis='accrual'):
             mp[r['account_id']] = dict(r)
     out = [{**r, 'net': r2(r['net'])} for r in mp.values()]
     out.sort(key=lambda r: (_lc(r['code']), _lc(r['name'])))
+    return out
+
+
+def _cash_income_expense_by_month(org_id, months):
+    """Cash-basis income/expense per month in two grouped queries instead of two whole-history scans per month.
+    Same arithmetic as income_expense_totals: per (month, account) net rounded, then summed."""
+    frm, to = months[0], end_of_month(months[-1])
+    direct = all(f'''SELECT substr(l.date, 1, 7) AS ym, a.id AS account_id, a.type, SUM(l.credit - l.debit) AS net
+    FROM ledger l JOIN accounts a ON a.id = l.account_id
+    WHERE l.org_id = ? AND l.date >= ? AND l.date <= ? AND a.type IN ({q(PL_TYPES)}) AND l.src_type NOT IN ('invoice','bill','creditnote','vendorcredit')
+    GROUP BY 1, a.id''', org_id, frm, to)
+    settle_by_month = SETTLE_SQL.replace('SELECT document_id, SUM(amount) AS amt FROM (', 'SELECT document_id, substr(date, 1, 7) AS ym, SUM(amount) AS amt FROM (', 1) \
+        .replace('GROUP BY document_id', 'GROUP BY document_id, substr(date, 1, 7)', 1)
+    settled = all(f'''WITH s AS ({settle_by_month})
+    SELECT s.ym, a.id AS account_id, a.type, SUM((l.credit - l.debit) * s.amt / d.total) AS net
+    FROM ledger l JOIN documents d ON d.id = l.src_id AND d.doc_type = l.src_type
+    JOIN s ON s.document_id = d.id JOIN accounts a ON a.id = l.account_id
+    WHERE l.org_id = ? AND l.src_type IN ('invoice','bill','creditnote','vendorcredit') AND d.total > 0 AND a.type IN ({q(PL_TYPES)})
+    GROUP BY s.ym, a.id''', org_id, org_id, org_id, org_id, org_id, frm, to, org_id)
+    acc = {}
+    for r in [*direct, *settled]:
+        k = (r['ym'], r['account_id'])
+        if k in acc:
+            acc[k]['net'] += r['net']
+        else:
+            acc[k] = {'type': r['type'], 'net': r['net']}
+    out = []
+    for m in months:
+        income = 0
+        expense = 0
+        for (ym, _aid), v in sorted(acc.items(), key=lambda kv: kv[0][1]):
+            if ym != m[0:7]:
+                continue
+            if v['type'] in INCOME_TYPES:
+                income += r2(v['net'])
+            else:
+                expense -= r2(v['net'])
+        out.append({'month': m[0:7], 'label': month_label(m), 'income': r2(income), 'expense': r2(expense)})
     return out
 
 
@@ -724,8 +763,8 @@ def open_docs_as_of(org_id, doc_type, as_of):
     """Open documents as of a date with their balance (document currency) at that date."""
     docs = []
     for d in all(f'''SELECT d.id AS doc_id, d.doc_type, d.number, d.date, d.due_date, d.total, d.exchange_rate, d.contact_id, c.display_name AS contact_name, d.status,
-      d.total - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id AND p.date <= ?), 0)
-        - COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.document_id = d.id AND ca.date <= ?), 0) - COALESCE(d.write_off, 0) AS bal
+      d.total - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id AND p.org_id = d.org_id AND p.date <= ?), 0)
+        - COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.document_id = d.id AND ca.org_id = d.org_id AND ca.date <= ?), 0) - COALESCE(d.write_off, 0) AS bal
     FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id
     WHERE d.org_id = ? AND d.doc_type = ? AND d.status IN {LIVE} AND d.date <= ?
     ORDER BY d.date COLLATE "C", d.number COLLATE "C" NULLS FIRST, d.id''', as_of, as_of, org_id, doc_type, as_of):
@@ -772,7 +811,7 @@ def unused_credits_as_of(org_id, side, as_of):
         add(p['contact_id'], _n(p['bal']) * _n(p['fx']))
     if side == 'sales':
         for rt in all(f'''SELECT d.contact_id, {DOC_FX} AS fx,
-        COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id AND p.date <= ?), 0)
+        COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id AND p.org_id = d.org_id AND p.date <= ?), 0)
         - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE org_id = d.org_id AND source_type = 'retainer' AND source_id = d.id AND date <= ?), 0) AS bal
       FROM documents d WHERE d.org_id = ? AND d.doc_type = 'retainer' AND d.date <= ? ORDER BY d.date COLLATE "C", d.id''', as_of, as_of, org_id, as_of):
             add(rt['contact_id'], _n(rt['bal']) * _n(rt['fx']))
@@ -1027,8 +1066,8 @@ def rpt_refund_history(req):
 def rpt_time_to_get_paid(req):
     p = params(req)
     docs = all(f'''SELECT d.id, d.date, d.contact_id, c.display_name AS name,
-      (SELECT MAX(dt COLLATE "C") FROM (SELECT p.date AS dt FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id
-                            UNION ALL SELECT ca.date FROM credit_applications ca WHERE ca.document_id = d.id) x) AS paid_on
+      (SELECT MAX(dt COLLATE "C") FROM (SELECT p.date AS dt FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id WHERE pa.document_id = d.id AND p.org_id = d.org_id
+                            UNION ALL SELECT ca.date FROM credit_applications ca WHERE ca.document_id = d.id AND ca.org_id = d.org_id) x) AS paid_on
     FROM documents d LEFT JOIN contacts c ON c.id = d.contact_id
     WHERE d.org_id = ? AND d.doc_type = 'invoice' AND d.status IN {LIVE} AND d.balance <= 0.004 AND d.date >= ? AND d.date <= ?
     ORDER BY d.date COLLATE "C", d.id''', p['org']['id'], p['from'], p['to'])
@@ -1513,8 +1552,8 @@ def rpt_hsn_summary(req):
 # ---------------- activity / projects / budgets ----------------
 def rpt_audit_trail(req):
     p = params(req)
-    where = ['a.org_id = ?', 'substr(a.created_at, 1, 10) >= ?', 'substr(a.created_at, 1, 10) <= ?']
-    args = [p['org']['id'], p['from'], p['to']]
+    where = ['a.org_id = ?', 'a.created_at >= ?', 'a.created_at <= ?']  # range form, so (org_id, created_at) can be used
+    args = [p['org']['id'], p['from'], f"{p['to']} 23:59:59.999999"]
     if truthy(p['q'].get('entity_type')):
         where.append('a.entity_type = ?')
         args.append(p['q'].get('entity_type'))
@@ -1522,10 +1561,10 @@ def rpt_audit_trail(req):
         where.append('a.user_id = ?')
         args.append(num_or_none(p['q'].get('user_id')))
     rows = []
-    for r in all(f'''SELECT a.id, a.created_at, a.user_id, u.name AS user_name, a.entity_type, a.entity_id, a.action, a.detail,
+    for r in visible_rows(req, all(f'''SELECT a.id, a.created_at, a.user_id, u.name AS user_name, a.entity_type, a.entity_id, a.action, a.detail,
       d.doc_type, d.id AS doc_id, d.number
     FROM activity a LEFT JOIN users u ON u.id = a.user_id LEFT JOIN documents d ON a.entity_type = 'document' AND d.id = a.entity_id AND d.org_id = a.org_id
-    WHERE {' AND '.join(where)} ORDER BY a.id DESC LIMIT 2000''', *args):
+    WHERE {' AND '.join(where)} ORDER BY a.id DESC LIMIT 2000''', *args)):
         x = {**r, 'entity': r['number'] if truthy(r['number']) else
              f"{_s(r['entity_type']) if truthy(r['entity_type']) else ''} #{_s(r['entity_id']) if r['entity_id'] is not None else ''}"}
         if r['entity_type'] == 'expense':
@@ -1805,6 +1844,36 @@ def aging_card(org_id, doc_type, as_of):
     return {'total': r2(current + overdue), 'current': r2(current), 'overdue': r2(overdue), 'buckets': buckets, 'count': len(docs)}
 
 
+def _dashboard_restricted(req, org_id, now, frm, to, basis, fy):
+    """The dashboard is everyone's home page, but its figures are report data: members without reports:view get the
+    same shape with the financial sections empty, and none of the report queries run for them."""
+    projects = None
+    if can(req, 'projects', 'view'):
+        def proj():
+            b = project_basics()
+            if not b:
+                return None
+            ms = first_of_month(now)
+            n = lambda sql, *a: (get(sql, *a) or {}).get('n') or 0  # noqa: E731
+            has_status = 'status' in b['pc']
+            return {
+                'active': n('SELECT COUNT(*) n FROM projects WHERE org_id = ? ' + ("AND status = 'active'" if has_status else ''), org_id),
+                'unbilled_hours': r2(get(f"SELECT COALESCE(SUM({b['hours']}),0) n FROM time_entries t WHERE t.org_id = ? AND {b['billable']} AND NOT ({b['invoiced']})", org_id)['n']),
+                'hours_this_month': r2(get(f"SELECT COALESCE(SUM({b['hours']}),0) n FROM time_entries t WHERE t.org_id = ? AND t.date >= ? AND t.date <= ?", org_id, ms, end_of_month(ms))['n']),
+            }
+        projects, err = _attempt(proj)
+        if err is not None:
+            projects = None
+    empty_card = {'total': 0, 'current': 0, 'overdue': 0, 'buckets': {'1-15': 0, '16-30': 0, '31-45': 0, '>45': 0}, 'count': 0}
+    keys = ('draft_invoices', 'pending_approvals', 'overdue_invoices', 'unpaid_bills', 'open_sales_orders', 'unbilled_expenses')
+    return {
+        'title': 'Dashboard', 'from': frm, 'to': to, 'basis': basis, 'fiscal_year_start': fy, 'as_of': now, 'restricted': True,
+        'receivables': empty_card, 'payables': empty_card, 'cash_flow': [], 'cash_opening': 0, 'income_expense': [],
+        'income_expense_totals': {'income': 0, 'expense': 0}, 'top_expenses': [], 'bank_accounts': [], 'watchlist': [],
+        'counts': {k: 0 for k in keys}, 'sales_this_month': 0, 'projects': projects,
+    }
+
+
 def dashboard(req):
     org = req.org
     org_id = org['id']
@@ -1818,6 +1887,8 @@ def dashboard(req):
         frm, to = to, frm
     months = months_in(frm, to)[:24]
     last_end = end_of_month(months[-1])
+    if not can(req, 'reports', 'view'):
+        return _dashboard_restricted(req, org_id, now, frm, to, basis, fy)
 
     # cash flow (cash + bank accounts)
     opening = r2(get(f'''SELECT COALESCE(SUM(l.debit - l.credit),0) s FROM ledger l JOIN accounts a ON a.id = l.account_id
@@ -1844,7 +1915,7 @@ def dashboard(req):
                                    'income': r2(sum_js(r['net'] for r in rs if r['type'] in INCOME_TYPES)),
                                    'expense': r2(0 - sum_js(r['net'] for r in rs if r['type'] in EXPENSE_TYPES))})
     else:
-        income_expense = [{'month': m[0:7], 'label': month_label(m), **income_expense_totals(org_id, m, end_of_month(m), 'cash')} for m in months]
+        income_expense = _cash_income_expense_by_month(org_id, months)
 
     top_expenses = [{**r, 'amount': r2(r['amount'])} for r in all(
         f'''SELECT a.id AS account_id, a.name AS account, SUM(l.debit - l.credit) AS amount FROM ledger l JOIN accounts a ON a.id = l.account_id
@@ -1968,15 +2039,32 @@ REPORTS = {
 
 
 def _gstr1_json_route(req):
+    if not can(req, 'sales', 'view'):  # per-invoice rows with customer GSTINs
+        raise HttpError(403, 'You do not have permission to do that')
     p = params(req)
     return gstr1_json(p['org'], p['from'], p['to'])
 
 
+# Reports that list individual sales or purchase records (documents, payments, contacts' balances) also need that
+# side's view right; summaries such as P&L and the balance sheet need reports:view only.
+REPORT_SIDE = {k: 'sales' for k in ('sales-by-customer', 'sales-by-item', 'sales-by-salesperson', 'ar-aging-summary', 'ar-aging-details',
+                                     'customer-balances', 'invoice-details', 'quote-details', 'salesorder-details', 'creditnote-details',
+                                     'salesreceipt-details', 'time-to-get-paid', 'payments-received', 'gstr1')}
+REPORT_SIDE.update({k: 'purchases' for k in ('purchases-by-vendor', 'purchases-by-item', 'ap-aging-summary', 'ap-aging-details', 'vendor-balances',
+                                              'bill-details', 'purchaseorder-details', 'payments-made', 'vendor-credit-details', 'expense-details',
+                                              'expenses-by-category', 'billable-expenses')})
+
+
 def _report(req):
-    fn = REPORTS.get(req.params.get('name'))
+    name = req.params.get('name')
+    fn = REPORTS.get(name)
     if not fn:
         # Express next(): no other module defines /reports/*, so this falls through to the API 404
         raise HttpError(404, 'Not found')
+    if name in REPORT_SIDE and not can(req, REPORT_SIDE[name], 'view'):
+        raise HttpError(403, 'You do not have permission to do that')
+    if name == 'refund-history' and not (can(req, 'sales', 'view') and can(req, 'purchases', 'view')):
+        raise HttpError(403, 'You do not have permission to do that')
     return fn(req)
 
 

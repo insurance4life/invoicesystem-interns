@@ -10,7 +10,7 @@ from django.http import HttpResponse
 
 from books.core.db import all, get, run, insert, update
 from books.core.router import bad, not_found, forbidden
-from books.core.util import audit
+from books.core.util import audit, like_pattern
 from books.core.auth import can
 from books.core.entities import assert_entity_access, visible_rows
 from books.core.jsutil import jsstr, num_or_none, to_int, truthy
@@ -131,7 +131,7 @@ def _list_files(req):
     search = q.get('q')
     if truthy(search):
         where.append('name ILIKE ?')
-        params.append('%' + _jstr(search).replace('\\', '\\\\') + '%')
+        params.append(like_pattern(_jstr(search)) or '%')
     return visible_rows(req, all(f"SELECT {LIST_COLS} FROM files WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 1000", *params))
 
 
@@ -161,6 +161,10 @@ def _create_file(req):
     used = get('SELECT COALESCE(SUM(size), 0) AS n FROM files WHERE org_id = ?', org)['n']
     if used + len(buf) > quota:
         raise bad(f'This organization has used its {quota // (1024 * 1024)} MB of file storage. Delete some files first.')
+    user_quota = int(os.environ.get('OPENBOOKS_USER_STORAGE_MB') or 2048) * 1024 * 1024
+    mine = get('SELECT COALESCE(SUM(size), 0) AS n FROM files WHERE uploaded_by = ?', (req.user or {}).get('id'))['n']
+    if mine + len(buf) > user_quota:
+        raise bad(f'You have used your {user_quota // (1024 * 1024)} MB of file storage across organizations.')
 
     et = _jstr(body.get('entity_type')) if truthy(body.get('entity_type')) else None
     eid = num_or_none(body.get('entity_id')) if et is not None else None

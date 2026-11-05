@@ -51,7 +51,7 @@ export default function ContactList({ type }) {
     { key: 'company_name', label: 'Company' },
     { key: 'email', label: 'Email' },
     { key: 'phone', label: 'Phone' },
-    { key: 'outstanding', label: isCust ? 'Receivables' : 'Payables', align: 'right', render: (r) => money(r.outstanding, r.currency) },
+    { key: 'outstanding', label: isCust ? 'Receivables' : 'Payables', align: 'right', render: (r) => (r.outstanding == null ? '' : money(r.outstanding, r.currency)) },
     { key: 'is_active', label: 'Status', render: (r) => <Badge status={r.is_active ? 'active' : 'inactive'} /> },
   ];
 

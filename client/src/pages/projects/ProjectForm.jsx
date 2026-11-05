@@ -13,6 +13,7 @@ const blank = () => ({
 function fromProject(p) {
   return {
     name: p.name || '', code: p.code || '', customer_id: p.customer_id || '', billing_method: p.billing_method || 'project_hours',
+    hiddenRates: !('rate' in p), // rates come back only to roles that can view reports
     rate: p.rate ?? '', budget_type: p.budget_type || 'none', budget_hours: p.budget_hours || '', budget_amount: p.budget_amount || '',
     description: p.description || '', status: p.status || 'active',
     users: (p.users || []).map((u) => ({ user_id: u.user_id, rate: u.rate ?? '', cost_rate: u.cost_rate ?? '' })),
@@ -63,14 +64,14 @@ export default function ProjectForm() {
       code: f.code.trim() || null,
       customer_id: f.customer_id || null,
       billing_method: f.billing_method,
-      rate: Number(f.rate) || 0,
+      ...(f.hiddenRates ? {} : { rate: Number(f.rate) || 0 }),
       budget_type: f.budget_type,
       budget_hours: f.budget_type === 'hours' ? Number(f.budget_hours) || 0 : 0,
-      budget_amount: f.budget_type === 'amount' ? Number(f.budget_amount) || 0 : 0,
+      ...(f.hiddenRates ? {} : { budget_amount: f.budget_type === 'amount' ? Number(f.budget_amount) || 0 : 0 }),
       description: f.description || null,
       status: f.status,
-      users: f.users.map((u) => ({ user_id: u.user_id, rate: Number(u.rate) || 0, cost_rate: Number(u.cost_rate) || 0 })),
-      tasks: f.tasks.filter((t) => t.name.trim()).map((t) => ({ id: t.id, name: t.name.trim(), description: t.description || null, rate: Number(t.rate) || 0, billable: t.billable ? 1 : 0 })),
+      users: f.users.map((u) => (f.hiddenRates ? { user_id: u.user_id } : { user_id: u.user_id, rate: Number(u.rate) || 0, cost_rate: Number(u.cost_rate) || 0 })),
+      tasks: f.tasks.filter((t) => t.name.trim()).map((t) => ({ id: t.id, name: t.name.trim(), description: t.description || null, ...(f.hiddenRates && t.id ? {} : { rate: Number(t.rate) || 0 }), billable: t.billable ? 1 : 0 })),
     };
     setBusy(true);
     try {

@@ -3,7 +3,7 @@ import json
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, forbidden, HttpError
-from books.core.util import audit, round2, today, next_number, assert_unlocked, assert_owned, clean_body, cap_list
+from books.core.util import audit, round2, today, next_number, assert_unlocked, assert_owned, clean_body, cap_list, like_pattern
 from books.core.auth import perm, can
 from books.core.jsutil import jsnum, jsstr, to_int, truthy
 from books.core.ledger import post, unpost, account_class, account_in_use
@@ -166,6 +166,8 @@ def routes(r):
             raise bad('Account name is required')
         if not ACCOUNT_CLASS.get(o.get('type')):
             raise bad('Invalid account type')
+        if o['type'] in BANK_TYPES and not can(req, 'banking', 'create'):
+            raise forbidden('Bank and card accounts are managed from Banking')
         if get('SELECT id FROM accounts WHERE org_id = ? AND lower(name) = lower(?)', req.org['id'], o['name']):
             raise bad('An account with this name already exists')
         if o.get('code') and get('SELECT id FROM accounts WHERE org_id = ? AND code = ?', req.org['id'], o['code']):
@@ -185,6 +187,11 @@ def routes(r):
                 o.pop('is_active', None)
         if o.get('type') and o['type'] != a['type'] and account_class(o['type']) != account_class(a['type']) and (a['debit'] or a['credit']):
             raise bad('Account class cannot change once transactions exist')
+        if o.get('type') and not ACCOUNT_CLASS.get(o['type']):
+            raise bad('Invalid account type')
+        if o.get('type') and (o['type'] in BANK_TYPES) != (a['type'] in BANK_TYPES) and not (
+                can(req, 'banking', 'edit') and (o['type'] in BANK_TYPES or can(req, 'banking', 'delete'))):
+            raise forbidden('Bank and card accounts are managed from Banking')
         if o.get('parent_id') and to_int(o['parent_id']) == a['id']:
             raise bad('An account cannot be its own parent')
         assert_owned(req.org['id'], 'accounts', [o.get('parent_id')], 'parent account')
@@ -233,9 +240,10 @@ def routes(r):
             p.append(q['type'])
         elif not q.get('profiles'):
             where.append("j.journal_type != 'template'")
-        if q.get('q'):
+        pat = like_pattern(q.get('q'))
+        if pat:
             where.append('(j.number ILIKE ? OR j.reference ILIKE ? OR j.notes ILIKE ?)')
-            p += [f"%{q['q']}%"] * 3
+            p += [pat] * 3
         return [parse_json(j, ['recurrence']) for j in all(f"SELECT j.* FROM journals j WHERE {' AND '.join(where)} ORDER BY j.date DESC, j.id DESC", *p)]
     r.get('/journals', perm('accountant', 'view'), list_journals)
 

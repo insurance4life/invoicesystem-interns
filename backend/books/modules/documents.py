@@ -3,7 +3,7 @@ import datetime
 import os
 
 from books.core.db import all, get, update, parse_json
-from books.core.router import bad, forbidden
+from books.core.router import bad, forbidden, rate_limit
 from books.core.util import audit, today, org_settings, peek_number, like_pattern
 from books.core.auth import can
 from books.core.jsutil import to_int, to_fixed2, jsnum
@@ -91,7 +91,10 @@ def routes(r):
         return {'rows': rows, 'total': total, 'page': page, 'per_page': per_page}
     r.get('/documents/:type', list_docs)
 
-    r.get('/documents/:type/next-number', lambda req: {'number': peek_number(get('SELECT * FROM orgs WHERE id = ?', req.org['id']), req.params['type'])})
+    def next_number(req):
+        _guard(req, req.params['type'], 'view')
+        return {'number': peek_number(get('SELECT * FROM orgs WHERE id = ?', req.org['id']), req.params['type'])}
+    r.get('/documents/:type/next-number', next_number)
 
     def get_doc(req):
         t = req.params['type']
@@ -105,8 +108,11 @@ def routes(r):
     def create(req):
         t = req.params['type']
         _guard(req, t, 'create')
-        if req.body.get('save_as') in ('send', 'open'):
-            _guard(req, t, 'edit')  # same right the /action route requires for mark_sent and open
+        if req.body.get('save_as') in ('send', 'open') or t == 'salesreceipt':
+            _guard(req, t, 'edit')  # same right the /action route requires; a sales receipt posts as soon as it is saved
+        rec = req.body.get('recurrence') if isinstance(req.body, dict) else None
+        if isinstance(rec, dict) and rec.get('auto_send'):
+            _guard(req, t, 'edit')  # the job would mark each generated document sent, which is an edit-level action
         res = save_document(req, t, req.body)
         doc, warnings = res['doc'], res['warnings']
         audit(req, 'document', doc['id'], 'created', f"{DOC_TYPES[t]['label']} {doc['number']}")
@@ -197,12 +203,19 @@ def routes(r):
         d = load_doc(req.org['id'], to_int(req.params['id']), with_lines=False)
         if d['doc_type'] != t:
             raise bad('Type mismatch')
-        send_email(req.org, to=b['to'], cc=b.get('cc'), subject=b.get('subject'), body=b.get('body') or '', entity_type='document', entity_id=d['id'])
+        if d['status'] in ('pending_approval', 'void', 'cancelled'):
+            raise bad('This document cannot be emailed until it is approved' if d['status'] == 'pending_approval' else f"A {d['status']} document cannot be emailed")
+        # The transition runs first: it enforces approvals and lock dates, and the customer gets mail only if it passes.
         if d['status'] in ('draft', 'open') and t not in ('recurring_invoice', 'recurring_bill'):
             d = doc_action(req, t, d['id'], 'send')
+            if d['status'] == 'pending_approval':
+                audit(req, 'document', d['id'], 'submitted for approval')
+                return {**doc_relations(req.org['id'], load_doc(req.org['id'], d['id'])),
+                        'warnings': ['Submitted for approval. Email it again once it is approved.']}
         else:
             from books.core.jsutil import now_iso  # noqa: PLC0415
             update('documents', d['id'], {'sent_at': now_iso()})
+        send_email(req.org, to=b['to'], cc=b.get('cc'), subject=b.get('subject'), body=b.get('body') or '', entity_type='document', entity_id=d['id'])
         audit(req, 'document', d['id'], 'emailed', b['to'])
         return doc_relations(req.org['id'], load_doc(req.org['id'], d['id']))
     r.post('/documents/:type/:id/email', email_post)
@@ -210,7 +223,7 @@ def routes(r):
     def remind(req):
         _guard(req, 'invoice', 'edit')
         d = load_doc(req.org['id'], to_int(req.params['id']), with_lines=False)
-        if d['doc_type'] != 'invoice' or d['balance'] <= 0:
+        if d['doc_type'] != 'invoice' or d['balance'] <= 0 or d['status'] in ('draft', 'pending_approval', 'void', 'cancelled'):
             raise bad('Only unpaid invoices can be reminded')
         s = org_settings(req.org)
         tpl = (s.get('email_templates') or {}).get('reminder') or DEFAULT_TEMPLATES['reminder']
@@ -229,6 +242,8 @@ def routes(r):
         # creates invoices and bills, so the caller needs create on both sides
         if not (can(req, 'sales', 'create') and can(req, 'purchases', 'create')):
             raise forbidden()
+        rate_limit(('recurring-run', req.org['id']), 1, int(os.environ.get('OPENBOOKS_RECURRING_RUN_INTERVAL') or 30),
+                   'Recurring profiles were just run. Try again in a moment.')
         return {'created': run_recurring(req.org['id'], req)}
     r.post('/recurring/run', run_due)
 

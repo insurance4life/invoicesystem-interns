@@ -47,7 +47,11 @@ export function AppProvider({ children }) {
   }, []);
 
   const login = useCallback(async (token) => { session.token = token; setBooting(true); await boot(); }, [boot]);
-  const logout = useCallback(() => { session.token = null; session.orgId = null; setUser(null); setMeta(null); }, []);
+  const logout = useCallback(() => {
+    const tok = session.token;
+    // ends the session on the server too, so a copied token stops working (best effort)
+    if (tok) fetch('/api/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${tok}` } }).catch(() => {});
+    session.token = null; session.orgId = null; setUser(null); setMeta(null); }, []);
   const switchOrg = useCallback(async (id) => { session.orgId = id; setMeta(null); await refreshMeta(); window.history.pushState({}, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); }, [refreshMeta]);
 
   const value = useMemo(() => {

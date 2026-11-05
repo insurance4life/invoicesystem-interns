@@ -106,7 +106,7 @@ export default function ProjectView() {
               <Table
                 columns={[
                   { key: 'name', label: 'Name' },
-                  { key: 'rate', label: 'Billing rate', align: 'right', render: (u) => money(u.rate) },
+                  fin && { key: 'rate', label: 'Billing rate', align: 'right', render: (u) => money(u.rate) },
                   fin && { key: 'cost_rate', label: 'Cost rate', align: 'right', render: (u) => money(u.cost_rate) },
                 ].filter(Boolean)}
                 rows={p.users}
@@ -173,7 +173,7 @@ export default function ProjectView() {
             columns={[
               { key: 'name', label: 'Task', render: (x) => <span className="bold">{x.name}</span> },
               { key: 'description', label: 'Description' },
-              { key: 'rate', label: 'Rate', align: 'right', render: (x) => money(x.rate) },
+              ...(fin ? [{ key: 'rate', label: 'Rate', align: 'right', render: (x) => money(x.rate) }] : []),
               { key: 'billable', label: 'Billable', render: (x) => (x.billable ? 'Yes' : <span className="muted">No</span>) },
               {
                 key: 'actions',

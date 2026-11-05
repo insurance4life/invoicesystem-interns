@@ -48,6 +48,7 @@ class User(models.Model):
     password_hash = T(null=False)
     default_org_id = I()
     theme = T('light')
+    session_epoch = I(0)
     created_at = created()
 
     class Meta:
@@ -555,6 +556,7 @@ class CustomField(models.Model):
 # ---------------------------------------------------------------- automation
 
 class WorkflowRule(models.Model):
+    created_by = I()
     org = ORG()
     name = T(null=False)
     module = T(null=False)

@@ -6,7 +6,7 @@ import re
 
 from books.core.db import all, get, run, insert, update, tx
 from books.core.router import bad, not_found, forbidden
-from books.core.util import audit, num, org_settings, cap_list
+from books.core.util import audit, num, org_settings, cap_list, like_pattern
 from books.core.calc import round2
 from books.core.auth import perm, can
 from books.core.documents import save_document
@@ -197,8 +197,11 @@ def _sync_tasks(org_id, project_id, lst, may_delete=True, req=None):
         fields = _clean_task(t)
         if not fields['name']:
             continue
+        rate_sent = isinstance(t, dict) and 'rate' in t
         existing = get('SELECT id, rate FROM project_tasks WHERE id = ? AND project_id = ? AND org_id = ?',
                        num_or_none(t.get('id')), project_id, org_id) if truthy(t.get('id')) else None
+        if existing and not rate_sent:
+            fields['rate'] = round2(num(existing['rate']))  # a hidden rate the client could not send back stays as stored
         if fields['rate'] != (round2(num(existing['rate'])) if existing else 0):
             _assert_may_price(req)  # task rates price task-hours invoices
         if existing:
@@ -227,8 +230,8 @@ def _project_totals(org_id, p):
         return s
 
     logged = total(lambda e: True)
-    billable = total(lambda e: truthy(e.get('billable')) and e.get('approval_status') != 'rejected')
-    unbilled = total(lambda e: truthy(e.get('billable')) and not truthy(e.get('invoice_id')) and e.get('approval_status') != 'rejected')
+    billable = total(lambda e: truthy(e.get('billable')) and e.get('approval_status') == 'approved')
+    unbilled = total(lambda e: truthy(e.get('billable')) and not truthy(e.get('invoice_id')) and e.get('approval_status') == 'approved')
     # invoiced revenue excludes tax; drafts, pending approvals and void documents are not revenue yet
     billed = get("""SELECT COALESCE(SUM(total - tax_total), 0) s FROM documents
                     WHERE org_id = ? AND project_id = ? AND doc_type = 'invoice' AND status NOT IN ('draft', 'pending_approval', 'void')""",
@@ -268,13 +271,19 @@ def may_see_financials(req):
     return req is None or can(req, 'reports', 'view')
 
 
+HIDDEN_PROJECT_FIELDS = ('rate', 'budget_amount')  # billing terms and the money budget are management data
+
+
 def _redact_users(users):
-    return [{k: v for k, v in u.items() if k != 'cost_rate'} if isinstance(u, dict) else u for u in users]
+    return [{k: v for k, v in u.items() if k not in ('cost_rate', 'rate')} if isinstance(u, dict) else u for u in users]
 
 
 def project_view(org_id, id_, req=None):
     p = _project_view(org_id, id_)
     if not may_see_financials(req):
+        for k in HIDDEN_PROJECT_FIELDS:
+            p.pop(k, None)
+        p['tasks'] = [{k: v for k, v in t.items() if k != 'rate'} for t in p.get('tasks') or []]
         p['users'] = _redact_users(p['users'])
         p['totals'] = {k: v for k, v in p['totals'].items() if k not in FINANCIAL_TOTALS
                        and not (k in ('budget', 'budget_used', 'budget_percent') and p['totals'].get('budget_type') == 'amount')}
@@ -304,11 +313,11 @@ def _list_projects(req):
         params.append(num_or_none(customer_id))
     if truthy(search):
         where.append('(p.name ILIKE ? OR p.code ILIKE ? OR c.display_name ILIKE ?)')
-        pat = '%' + _escape_like(_jstr(search)) + '%'
+        pat = like_pattern(_jstr(search)) or '%'
         params += [pat, pat, pat]
     rows = all(f"""SELECT p.*, c.display_name AS customer_name,
         (SELECT COALESCE(SUM(minutes), 0) FROM time_entries t WHERE t.project_id = p.id) AS logged_minutes,
-        (SELECT COALESCE(SUM(minutes), 0) FROM time_entries t WHERE t.project_id = p.id AND t.billable = 1 AND t.invoice_id IS NULL AND t.approval_status != 'rejected') AS unbilled_minutes,
+        (SELECT COALESCE(SUM(minutes), 0) FROM time_entries t WHERE t.project_id = p.id AND t.billable = 1 AND t.invoice_id IS NULL AND t.approval_status = 'approved') AS unbilled_minutes,
         (SELECT COUNT(*) FROM project_tasks pt WHERE pt.project_id = p.id) AS task_count
       FROM projects p LEFT JOIN contacts c ON c.id = p.customer_id
       WHERE {' AND '.join(where)} ORDER BY lower(p.name), p.id""", *params)
@@ -319,6 +328,8 @@ def _list_projects(req):
     if not may_see_financials(req):
         for x in out:
             x['users'] = _redact_users(x['users'])
+            for k in HIDDEN_PROJECT_FIELDS:
+                x.pop(k, None)
     return out
 
 
@@ -334,6 +345,8 @@ def _create_project(req):
                   or any(jsnum(u.get('rate')) or jsnum(u.get('cost_rate')) for u in o.get('users') or []))
         if priced:
             _assert_may_price(req)
+        if jsnum(o.get('budget_amount')) and not may_see_financials(req):
+            raise forbidden('You do not have permission to set the project budget')
         id_ = insert('projects', {
             'billing_method': 'project_hours', 'rate': 0, 'budget_type': 'none', 'budget_hours': 0, 'budget_amount': 0,
             'status': 'active', 'users': [], **o, 'org_id': org,
@@ -352,10 +365,15 @@ def _update_project(req):
         cur = load_project(org, id_)
         body = _body(req)
         o = _clean_project(org, body)
-        if 'users' in o and not may_see_financials(req):
-            # Cost rates are hidden from this caller, so its form cannot echo them back: keep the stored ones.
-            kept = {u.get('user_id'): u.get('cost_rate') for u in cur.get('users') or [] if isinstance(u, dict)}
-            o['users'] = [{**u, 'cost_rate': round2(num(kept.get(u['user_id'])))} for u in o['users']]
+        if not may_see_financials(req):
+            # Rates and the money budget are hidden from this caller, so its form cannot echo them back: keep the stored ones.
+            # A sent value that differs is a real change: rate falls to the billing check below, the budget is refused.
+            if 'budget_amount' in o and o['budget_amount'] != round2(num(cur.get('budget_amount'))):
+                raise forbidden('You do not have permission to change the project budget')
+            if 'users' in o:
+                kept = {u.get('user_id'): u for u in cur.get('users') or [] if isinstance(u, dict)}
+                o['users'] = [{**u, 'rate': round2(num((kept.get(u['user_id']) or {}).get('rate'))),
+                               'cost_rate': round2(num((kept.get(u['user_id']) or {}).get('cost_rate')))} for u in o['users']]
         # Billing settings price the invoices raised from this project, so changing them needs the right to bill
         # (sales:create), not just projects:edit, which timesheet-only roles hold to log time.
         changed = [f for f in BILLING_FIELDS if f in o and o[f] != cur.get(f)]
@@ -391,10 +409,14 @@ def _delete_project(req):
 
 
 # ---------- tasks ----------
+def _task_out(req, t):
+    return t if may_see_financials(req) else {k: v for k, v in t.items() if k != 'rate'}  # billing rates are management data
+
+
 def _list_tasks(req):
     pid = to_int(req.params['id'])
     load_project(req.org['id'], pid)
-    return all('SELECT * FROM project_tasks WHERE project_id = ? AND org_id = ? ORDER BY id', pid, req.org['id'])
+    return [_task_out(req, t) for t in all('SELECT * FROM project_tasks WHERE project_id = ? AND org_id = ? ORDER BY id', pid, req.org['id'])]
 
 
 def _create_task(req):
@@ -409,7 +431,7 @@ def _create_task(req):
             _assert_may_price(req)
         id_ = insert('project_tasks', {**f, 'org_id': org, 'project_id': pid})
         audit(req, 'project', pid, 'task added', f['name'])
-        return get('SELECT * FROM project_tasks WHERE id = ?', id_)
+        return _task_out(req, get('SELECT * FROM project_tasks WHERE id = ?', id_))
     return tx(_do)
 
 
@@ -432,7 +454,7 @@ def _update_task(req):
         if f['rate'] != round2(num(t.get('rate'))):
             _assert_may_price(req)
         update('project_tasks', t['id'], f)
-        return get('SELECT * FROM project_tasks WHERE id = ?', t['id'])
+        return _task_out(req, get('SELECT * FROM project_tasks WHERE id = ?', t['id']))
     return tx(_do)
 
 
@@ -585,6 +607,10 @@ def _list_entries(req):
     q = req.query
     where = ['t.org_id = ?']
     params = [req.org['id']]
+    if not (can(req, 'projects', 'approve') or can(req, 'reports', 'view')):
+        # timesheet staff see their own entries; approvers and report readers see everyone's
+        where.append('t.user_id = ?')
+        params.append(req.user['id'])
     if truthy(q.get('project_id')):
         where.append('t.project_id = ?')
         params.append(num_or_none(q.get('project_id')))
@@ -604,7 +630,7 @@ def _list_entries(req):
         where.append('t.approval_status = ?')
         params.append(q.get('status'))
     if _flag(q.get('unbilled')):
-        where.append("t.billable = 1 AND t.invoice_id IS NULL AND t.approval_status != 'rejected'")
+        where.append("t.billable = 1 AND t.invoice_id IS NULL AND t.approval_status = 'approved'")
     where_sql = ' AND '.join(where)
     rows = all(f"""SELECT t.*, p.name AS project_name, p.billing_method, tk.name AS task_name, u.name AS user_name, i.number AS invoice_number
         FROM time_entries t JOIN projects p ON p.id = t.project_id
@@ -634,6 +660,8 @@ def _update_entry(req):
         if e.get('timer_started_at'):
             raise bad('Stop the running timer before editing this entry.')
         f = _entry_fields(req, _body(req), e)
+        if not can(req, 'projects', 'approve') and any(k in f and f[k] != e.get(k) for k in ('minutes', 'project_id', 'task_id', 'billable', 'date')):
+            f['approval_status'] = 'pending'  # the approver reviews the changed time before it can be invoiced
         update('time_entries', e['id'], f)
         audit(req, 'time_entry', e['id'], 'updated')
         return _entry_row(org, e['id'])
@@ -671,13 +699,14 @@ def _set_approval(status):
 # ---------- billing: unbilled time and expenses -> draft invoice ----------
 def _invoice_project(req):
     def _do():
-        if not can(req, 'sales', 'create'):
+        # the invoice copies time notes and expense details into a customer document
+        if not (can(req, 'sales', 'create') and can(req, 'projects', 'view')):
             raise forbidden()
         org = req.org['id']
         p = load_project(org, to_int(req.params['id']))
         body = _body(req)
         frm, to = body.get('from'), body.get('to')
-        include_expenses = True if 'include_expenses' not in body else _flag(body['include_expenses'])
+        include_expenses = (True if 'include_expenses' not in body else _flag(body['include_expenses'])) and can(req, 'purchases', 'view')
         inv_date = body.get('date') if truthy(body.get('date')) else today()
         if not p.get('customer_id'):
             raise bad('Set a customer on the project before invoicing it')
@@ -692,7 +721,7 @@ def _invoice_project(req):
         entries = all(f"""SELECT t.*, tk.name AS task_name, tk.rate AS task_rate, u.name AS user_name
             FROM time_entries t LEFT JOIN project_tasks tk ON tk.id = t.task_id LEFT JOIN users u ON u.id = t.user_id
             WHERE t.org_id = ? AND t.project_id = ? AND t.billable = 1 AND t.invoice_id IS NULL
-              AND t.approval_status != 'rejected' AND t.timer_started_at IS NULL{rng_sql}
+              AND t.approval_status = 'approved' AND t.timer_started_at IS NULL{rng_sql}
             ORDER BY t.date, t.id""", org, p['id'], *rng)
 
         lines = []

@@ -2,7 +2,7 @@
 from books.core.db import all, get, run, insert, update, tx
 from books.core.router import bad, not_found, forbidden
 from books.core.auth import can
-from books.core.util import round2, next_number, assert_unlocked
+from books.core.util import round2, next_number, assert_unlocked, canon_date, cap_list, BANK_TYPES
 from books.core.jsutil import jsnum, jsstr, today, truthy
 from books.core.calc import sum_js
 from books.core.ledger import post, unpost, sys_account
@@ -105,23 +105,35 @@ def save_payment(req, kind, body, id=None):  # noqa: A002
         if not amount > 0:
             raise bad('Enter an amount greater than zero')
         tds = round2(body.get('tds_amount') or 0)
-        allocations = [a for a in (body.get('allocations') or []) if jsnum(a.get('amount')) > 0]
+        fx = jsnum(body.get('exchange_rate')) or 1
+        charges = round2(body.get('bank_charges') or 0)
+        # every amount below scales or offsets a posted line, so a negative one would invert it
+        if not fx > 0 or charges < 0 or tds < 0 or tds > amount:
+            raise bad('Exchange rate must be positive, and bank charges and TDS cannot be negative or exceed the amount')
+        allocations = [a for a in (cap_list(body.get('allocations'), 'allocations') or []) if jsnum(a.get('amount')) > 0]
         total_alloc = round2(sum_js(jsnum(a.get('amount')) for a in allocations))
         if total_alloc > round2(amount + tds) + 0.001:
             raise bad('Amount applied to documents exceeds the payment amount')
         account_id = body.get('account_id') or sys_account(org['id'], 'undeposited_funds' if kind == 'received' else 'petty_cash')
-        if not get('SELECT id FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id']):
+        acct = get('SELECT id, type FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id'])
+        if not acct:
             raise bad('Invalid deposit / paid-through account')
+        if acct['type'] not in BANK_TYPES:
+            raise bad('Payments go to a bank, cash, card or clearing account')  # anything else is journal work
 
         fields = {
             'contact_id': contact['id'], 'date': date, 'amount': amount, 'currency': body.get('currency') or contact.get('currency') or org.get('currency'),
-            'exchange_rate': jsnum(body.get('exchange_rate')) or 1, 'mode': body.get('mode') or 'Cash', 'account_id': account_id,
-            'reference': body.get('reference') or None, 'bank_charges': round2(body.get('bank_charges') or 0), 'tds_amount': tds,
+            'exchange_rate': fx, 'mode': body.get('mode') or 'Cash', 'account_id': account_id,
+            'reference': body.get('reference') or None, 'bank_charges': charges, 'tds_amount': tds,
             'notes': body.get('notes') or None, 'is_online': 1 if truthy(body.get('is_online')) else 0,
         }
         pid = id
-        if existing and _is_deposited(id) and (round2(existing['amount']) != amount or existing['account_id'] != int(account_id) or existing['date'] != date):
-            raise bad('This payment is included in a bank deposit. Remove it from the deposit before changing its amount, date or account.')
+        if existing and _is_deposited(id) and (round2(existing['amount']) != amount or existing['account_id'] != int(account_id) or existing['date'] != date
+                                               or round2(existing.get('bank_charges') or 0) != charges or round2(existing.get('tds_amount') or 0) != tds
+                                               or abs(jsnum(existing.get('exchange_rate') or 1) - fx) > 1e-9
+                                               or existing.get('currency') != fields['currency'] or existing.get('contact_id') != contact['id']):
+            # the deposit moved this payment's Undeposited Funds line at its old value
+            raise bad('This payment is included in a bank deposit. Remove it from the deposit before changing it.')
         if existing:
             touched = []
             for a in existing['allocations']:
@@ -240,12 +252,14 @@ def apply_credits(req, body):
     org = req.org
     source_type = body.get('source_type')
     source_id = body.get('source_id')
-    applications = body.get('applications') or []
+    applications = cap_list(body.get('applications'), 'applications') or []
     date = body.get('date')
 
     def _do():
         src = _source_balance(org['id'], source_type, source_id)
         _require_side(req, src['side'])
+        app_date = canon_date(date) if date else today()
+        assert_unlocked(org, app_date, _lock_kind(src['side']))  # same rule as deleting an application
         apps = [a for a in applications if jsnum(a.get('amount')) > 0]
         total = round2(sum_js(jsnum(a.get('amount')) for a in apps))
         if total > src['balance'] + 0.001:
@@ -261,7 +275,7 @@ def apply_credits(req, body):
             if jsnum(a.get('amount')) > d['balance'] + 0.001:
                 raise bad(f"Amount exceeds the balance of {d['number']}")
             insert('credit_applications', {'org_id': org['id'], 'source_type': source_type, 'source_id': source_id, 'document_id': d['id'],
-                                           'amount': round2(a.get('amount')), 'date': date or today()})
+                                           'amount': round2(a.get('amount')), 'date': app_date})
             refresh_balance(d['id'])
         if source_type not in ('payment', 'retainer'):
             refresh_balance(source_id)
@@ -274,7 +288,7 @@ def delete_credit_application(req, id):  # noqa: A002
     if not ca:
         raise not_found('Credit application')
     side = _doc_side(req.org['id'], ca['document_id'])
-    _require_side(req, side)
+    _require_side(req, side, 'delete')
 
     def _do():
         assert_unlocked(req.org, ca['date'], _lock_kind(side))
@@ -303,6 +317,9 @@ def save_refund(req, body):
         date = body.get('date') or today()
         assert_unlocked(org, date, 'payment_received' if src['side'] == 'sales' else 'payment_made')
         account_id = body.get('account_id') or sys_account(org['id'], 'petty_cash')
+        acct = get('SELECT type FROM accounts WHERE id = ? AND org_id = ?', account_id, org['id'])
+        if not acct or acct['type'] not in BANK_TYPES:
+            raise bad('Refunds are paid from a bank, cash, card or clearing account')
         rid = insert('refunds', {'org_id': org['id'], 'source_type': source_type, 'source_id': source_id, 'date': date, 'amount': amount,
                                  'account_id': account_id, 'mode': body.get('mode') or 'Cash', 'reference': body.get('reference') or None,
                                  'notes': body.get('notes') or None})
@@ -327,7 +344,7 @@ def delete_refund(req, id):  # noqa: A002
         side = 'sales' if p and p['type'] == 'received' else 'purchase'
     else:
         side = _doc_side(req.org['id'], r['source_id'])
-    _require_side(req, side)
+    _require_side(req, side, 'delete')
 
     def _do():
         assert_unlocked(req.org, r['date'], _lock_kind(side))

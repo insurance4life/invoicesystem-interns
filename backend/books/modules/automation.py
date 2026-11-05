@@ -15,7 +15,7 @@ import urllib.request
 from django.db import transaction
 
 from books.core.db import all, get, run, insert, update, parse_json
-from books.core.router import bad, not_found, forbidden
+from books.core.router import bad, not_found, forbidden, HttpError
 from books.core.util import audit, on_event, token
 from books.core.auth import perm, can
 from books.core.jsutil import now_iso, truthy
@@ -216,13 +216,33 @@ def hook_view(hook, req=None):
     return {**hook, 'url': f"/api/public/hooks/{hook['token']}"}
 
 
+def _mask_url(url):
+    """Scheme and host only: incoming-webhook URLs often carry their secret in the path or query."""
+    m = re.match(r'^([a-zA-Z][a-zA-Z0-9+.-]*://)(?:[^/?#@]*@)?([^/?#@]*)', str(url or ''))  # user:password@ is dropped too
+    return (m.group(1) + m.group(2) + '/********') if m else '********'
+
+
 def rule_out(req, rule):
-    """Webhook header values are usually third-party credentials: hidden from read-only settings roles."""
+    """Webhook URLs and header values are usually third-party credentials: hidden from read-only settings roles."""
     if can(req, 'settings', 'edit'):
         return rule
-    acts = [{**a, 'headers': {k: '********' for k in (a.get('headers') or {})}} if isinstance(a, dict) and a.get('type') == 'webhook' else a
+    acts = [{**a, 'url': _mask_url(a.get('url')), 'headers': {k: '********' for k in (a.get('headers') or {})}}
+            if isinstance(a, dict) and a.get('type') == 'webhook' else a
             for a in (rule.get('actions') or [])]
     return {**rule, 'actions': acts}
+
+
+def _author_req(org, rule):
+    """The rule author's current rights in this org, or None when the author is no longer an active member."""
+    m = get("""SELECT ou.status, r.permissions FROM org_users ou LEFT JOIN roles r ON r.id = ou.role_id
+               WHERE ou.org_id = ? AND ou.user_id = ?""", org['id'], rule.get('created_by'))
+    if not m or m['status'] != 'active':
+        return None
+    try:
+        perms = json.loads(m['permissions'] or '{}')
+    except ValueError:
+        perms = {}
+    return type('AuthorReq', (), {'org': org, 'perms': perms, 'user': {'id': rule.get('created_by')}})()
 
 
 def hook_row(org_id, id):  # noqa: A002
@@ -512,6 +532,16 @@ def _on_event(req=None, entity_type=None, entity_id=None, action=None, detail=No
             if not all_(compare((record or {}).get(_key(bget(c, 'field'))), bget(c, 'op'), bget(c, 'value')) for c in conds):
                 continue
             ctx = {'module': module, 'record': record, 'entity_id': eid, 'action': action, 'trigger': trigger}
+            if rule.get('created_by'):
+                # a rule acts with its author's rights: if the author lost them (or left), it stops
+                author = _author_req(org, rule)
+                try:
+                    if author is None or not can(author, 'settings', 'view'):
+                        raise forbidden()
+                    assert_rule_reader(author, rule)
+                except HttpError:
+                    log_row(org['id'], rule['id'], ctx, 'rule', 'failed', "Skipped: the rule's author no longer has the access it needs")
+                    continue
             for act in (rule['actions'] if isinstance(rule['actions'], list) else []):
                 run_action(org, rule, act, ctx)
     finally:
@@ -540,7 +570,8 @@ def routes(r):
         assert_rule_reader(req, data)
         if get('SELECT COUNT(*) AS n FROM workflow_rules WHERE org_id = ?', req.org['id'])['n'] >= MAX_RULES:
             raise bad(f'An organization can have at most {MAX_RULES} workflow rules')
-        rid = insert('workflow_rules', {'org_id': req.org['id'], **data, 'conditions': js_json(data['conditions']), 'actions': js_json(data['actions'])})
+        rid = insert('workflow_rules', {'org_id': req.org['id'], **data, 'conditions': js_json(data['conditions']), 'actions': js_json(data['actions']),
+                                        'created_by': req.user['id']})
         audit(req, 'workflow_rule', rid, 'created', data['name'])
         return rule_row(req.org['id'], rid)
     r.post('/automation/rules', perm('settings', 'create'), post_rule)
@@ -577,8 +608,11 @@ def routes(r):
         lim = 200 if (isinstance(n, float) and math.isnan(n)) or not n else n
         lim = min(lim, 1000)
         lim = None if lim < 0 else int(lim)  # SQLite treats a negative LIMIT as "no limit"
-        return all(f'''SELECT l.*, r.name AS rule_name FROM workflow_logs l LEFT JOIN workflow_rules r ON r.id = l.rule_id
+        rows = all(f'''SELECT l.*, r.name AS rule_name FROM workflow_logs l LEFT JOIN workflow_rules r ON r.id = l.rule_id
           WHERE {' AND '.join(where)} ORDER BY l.id DESC LIMIT ?''', *p, lim)
+        if not can(req, 'settings', 'edit'):  # webhook log lines carry the URL
+            rows = [{**x, 'message': re.sub(r'[a-zA-Z][a-zA-Z0-9+.-]*://\S+', lambda m_: _mask_url(m_.group(0)), x.get('message') or '')} for x in rows]
+        return rows
     r.get('/automation/logs', perm('settings', 'view'), logs)
 
     r.get('/automation/incoming-webhooks', perm('settings', 'view'), lambda req: [hook_view(h, req) for h in all(

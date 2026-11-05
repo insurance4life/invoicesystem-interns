@@ -2,9 +2,16 @@
 import os
 
 from books.core.db import get, all, insert, update, run
-from books.core.router import HttpError, bad, API_LOCK, _throttle
+from books.core.router import HttpError, bad, API_LOCK, _throttle, rate_limit, client_ip
 from books.core.auth import hash_password, verify_password, user_token, require_user
 from books.core.orgs import create_org, delete_org, check_sizes as check_org_sizes
+
+
+def _check_user_fields(name=None, email=None, theme=None):
+    # the users row is re-read on every request, so its free text is bounded
+    for v, n, label in ((name, 200, 'Name'), (email, 254, 'Email'), (theme, 32, 'Theme')):
+        if v is not None and (not isinstance(v, str) or len(v) > n):
+            raise bad(f'{label} is too long')
 
 
 def _signup(req):
@@ -14,8 +21,11 @@ def _signup(req):
         raise bad('Name, email and password are required')
     if len(str(password)) < 6:
         raise bad('Password must be at least 6 characters')
+    rate_limit(('signup', req.django.META.get('REMOTE_ADDR') or '?'), int(os.environ.get('OPENBOOKS_SIGNUP_RATE_LIMIT') or 20), 3600,
+               'Too many sign-ups from this address. Try again later.')
     if not isinstance(organization, dict) or not isinstance(name, str) or not isinstance(email, str):
         raise bad('Invalid sign-up details')
+    _check_user_fields(name=name, email=email)
     check_org_sizes(organization)  # before the user row is written
     password_hash = hash_password(password)  # outside API_LOCK (see router.SELF_LOCKING)
     with API_LOCK:
@@ -32,7 +42,7 @@ def _login(req):
     u = get('SELECT * FROM users WHERE lower(email) = lower(?)', email or '')
     if not u or not verify_password(password or '', u['password_hash']):
         raise HttpError(401, 'Invalid email or password')
-    return {'token': user_token(u['id'], u['password_hash']), 'user': {'id': u['id'], 'name': u['name'], 'email': u['email'], 'default_org_id': u['default_org_id']}}
+    return {'token': user_token(u['id'], u['password_hash'], u.get('session_epoch') or 0), 'user': {'id': u['id'], 'name': u['name'], 'email': u['email'], 'default_org_id': u['default_org_id']}}
 
 
 def _me(req):
@@ -65,6 +75,7 @@ def _invite_answer(req, accept):
 def _update_me(req):
     """Self-locking (router.SELF_LOCKING): password checks and hashing run outside API_LOCK; only the writes take it."""
     b = req.body
+    _check_user_fields(name=b.get('name') or None, email=b.get('email') or None, theme=b.get('theme') or None)
     patch = {}
     if b.get('name'):
         patch['name'] = b['name']
@@ -90,7 +101,7 @@ def _update_me(req):
         update('users', req.user['id'], patch)
         out = {'user': get('SELECT id, name, email, default_org_id, theme FROM users WHERE id = ?', req.user['id'])}
     if 'password_hash' in patch:
-        out['token'] = user_token(req.user['id'], patch['password_hash'])  # older tokens stop working; this one replaces them
+        out['token'] = user_token(req.user['id'], patch['password_hash'], (get('SELECT session_epoch FROM users WHERE id = ?', req.user['id']) or {}).get('session_epoch') or 0)  # older tokens stop working; this one replaces them
     return out
 
 
@@ -98,6 +109,9 @@ def _create_org(req):
     if not isinstance(req.body, dict) or not req.body.get('name'):
         raise bad('Organization name is required')
     _throttle(req)
+    # accounts are cheap to create, so organizations are also bounded per client address
+    rate_limit(('org-create', client_ip(req)), int(os.environ.get('OPENBOOKS_ORG_CREATE_RATE_LIMIT') or 20), 3600,
+               'Too many organizations created from this address. Try again later.')
     # Every per-organization quota (email, storage, imports) starts fresh in a new org, so the number of orgs one
     # account can own is capped.
     cap = int(os.environ.get('OPENBOOKS_MAX_ORGS_PER_USER') or 10)
@@ -125,6 +139,12 @@ def routes(r):
     r.post('/signup', _signup)
     r.post('/login', _login)
     r.get('/me', require_user, _me)
+
+    def _logout(req):
+        # bumping the epoch changes the credential version, so every token issued before this moment stops working
+        run('UPDATE users SET session_epoch = COALESCE(session_epoch, 0) + 1 WHERE id = ?', req.user['id'])
+        return {'ok': True}
+    r.post('/logout', require_user, _logout)
     r.put('/me', require_user, _update_me)
     r.post('/orgs', require_user, _create_org)
     r.post('/invites/:org_id/accept', require_user, lambda req: _invite_answer(req, True))

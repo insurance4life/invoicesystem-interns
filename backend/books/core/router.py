@@ -38,6 +38,20 @@ _AUTH_HITS = {}
 _AUTH_MUTEX = threading.Lock()
 
 
+def _evict(table, now, window):
+    """Drop keys whose hits are all older than the window, then the oldest keys, so one flood of addresses cannot
+    reset everybody else's limit."""
+    for k in [k for k, v in table.items() if not v or now - v[-1] >= window]:
+        table.pop(k, None)
+    if len(table) > 5000:
+        for k in sorted(table, key=lambda k: table[k][-1])[:len(table) - 5000]:
+            table.pop(k, None)
+
+
+def client_ip(req):
+    return req.django.META.get('REMOTE_ADDR') or '?'
+
+
 def _throttle(req):
     """At most OPENBOOKS_AUTH_RATE_LIMIT (default 30) sign-in/sign-up attempts per client address per minute."""
     limit = int(os.environ.get('OPENBOOKS_AUTH_RATE_LIMIT') or 30)
@@ -45,12 +59,28 @@ def _throttle(req):
     now = time.monotonic()
     with _AUTH_MUTEX:
         if len(_AUTH_HITS) > 10000:
-            _AUTH_HITS.clear()
+            _evict(_AUTH_HITS, now, 60)
         hits = [t for t in _AUTH_HITS.get(ip, ()) if now - t < 60]
         if len(hits) >= limit:
             raise HttpError(429, 'Too many attempts. Wait a minute and try again.')
         hits.append(now)
         _AUTH_HITS[ip] = hits
+
+
+_LIMIT_HITS = {}
+
+
+def rate_limit(key, limit, window_sec, message):
+    """At most `limit` events per `window_sec` for `key` (an address, org or user), in this process."""
+    now = time.monotonic()
+    with _AUTH_MUTEX:
+        if len(_LIMIT_HITS) > 20000:
+            _evict(_LIMIT_HITS, now, window_sec)
+        hits = [t for t in _LIMIT_HITS.get(key, ()) if now - t < window_sec]
+        if len(hits) >= limit:
+            raise HttpError(429, message)
+        hits.append(now)
+        _LIMIT_HITS[key] = hits
 
 
 class HttpError(Exception):

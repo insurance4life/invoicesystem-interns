@@ -28,6 +28,7 @@ function fromContact(c) {
     company_name: c.company_name || '', display_name: c.display_name || '', email: c.email || '', phone: c.phone || '', mobile: c.mobile || '',
     website: c.website || '', gst_treatment: c.gst_treatment || 'unregistered', gstin: c.gstin || '', place_of_supply: c.place_of_supply || '',
     pan: c.pan || '', currency: c.currency || '', payment_term_id: c.payment_term_id ?? '',
+    hiddenOpening: !!c.id && !('opening_balance' in c), // AR/AP figures come back only to sales/purchases viewers
     opening_balance: c.opening_balance || '', opening_balance_date: c.opening_balance_date || today(),
     credit_limit: c.credit_limit ?? '', price_list_id: c.price_list_id ?? '', portal_enabled: !!c.portal_enabled,
     reminders_enabled: c.reminders_enabled == null ? true : !!c.reminders_enabled,
@@ -108,7 +109,8 @@ export default function ContactForm({ type }) {
       contact_persons: f.contact_persons.filter((p) => p.first_name || p.last_name || p.email),
       notes: f.notes, credit_limit: isCust ? num(f.credit_limit) : null, price_list_id: num(f.price_list_id),
       portal_enabled: f.portal_enabled ? 1 : 0, reminders_enabled: f.reminders_enabled ? 1 : 0,
-      opening_balance: Number(f.opening_balance) || 0, opening_balance_date: f.opening_balance_date, custom_fields: f.custom_fields,
+      ...(f.hiddenOpening ? {} : { opening_balance: Number(f.opening_balance) || 0, opening_balance_date: f.opening_balance_date }),
+      custom_fields: f.custom_fields,
     };
     setSaving(true);
     try {

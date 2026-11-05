@@ -4,10 +4,10 @@ import re
 
 from books.core.db import all, get, insert, update, run, tx, parse_json
 from books.core.router import bad, not_found, forbidden
-from books.core.util import token, audit, round2, today
+from books.core.util import token, audit, round2, today, like_pattern, clean_custom_fields
 from books.core.auth import perm, can
 from books.core.documents import DOC_TYPES
-from books.core.jsutil import to_int, truthy
+from books.core.jsutil import to_int, truthy, jsnum
 from books.core.ledger import sys_account, repost_opening, unpost_opening
 from books.core.payments import available_credits
 
@@ -36,7 +36,9 @@ def _clean_contact(body):
         if f in body:
             o[f] = None if body[f] == '' else body[f]
     for j in JSON_COLS:
-        if isinstance(o.get(j), (dict, list)):
+        if j == 'custom_fields' and j in o:
+            o[j] = clean_custom_fields(o[j])
+        elif isinstance(o.get(j), (dict, list)):
             o[j] = json.dumps(o[j], separators=(',', ':'), ensure_ascii=False)
     if o.get('gstin'):
         o['gstin'] = str(o['gstin']).upper().strip()
@@ -66,6 +68,9 @@ def contact_out(req, c):
     sales:view."""
     if not can(req, 'sales', 'view'):
         c = {k: v for k, v in c.items() if k != 'portal_token'}
+    if not can(req, 'sales' if c.get('type') == 'customer' else 'purchases', 'view'):
+        # AR/AP figures are sales/purchases data
+        c = {k: v for k, v in c.items() if k not in ('outstanding', 'unused_credits', 'opening_balance', 'opening_balance_date')}
     return c
 
 
@@ -95,16 +100,18 @@ def routes(r):
             where.append('c.is_active = 1')
         if status == 'inactive':
             where.append('c.is_active = 0')
-        if search:
+        pat = like_pattern(search)
+        if pat:
             where.append('(c.display_name ILIKE ? OR c.company_name ILIKE ? OR c.email ILIKE ? OR c.phone ILIKE ? OR c.gstin ILIKE ?)')
-            p += [f'%{search}%'] * 5
+            p += [pat] * 5
         order = {'display_name': 'lower(c.display_name), c.id', 'created': 'c.id DESC', 'company': 'c.company_name, c.id'}.get(sort) or 'c.display_name, c.id'
         rows = all(f'''SELECT c.id, c.type, c.display_name, c.company_name, c.email, c.phone, c.gstin, c.currency, c.is_active, c.place_of_supply,
             c.gst_treatment, c.payment_term_id,
             (SELECT COALESCE(SUM(CASE WHEN c.type='vendor' THEN l.credit - l.debit ELSE l.debit - l.credit END),0) FROM ledger l
               JOIN accounts a ON a.id = l.account_id WHERE l.contact_id = c.id AND l.org_id = c.org_id AND a.org_id = c.org_id AND a.system_code IN ('ar','ap')) AS outstanding
           FROM contacts c WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ? OFFSET ?''', *p, per_page, (page - 1) * per_page)
-        return [{**x, 'outstanding': round2(x['outstanding'])} for x in rows]
+        side = {'customer': can(req, 'sales', 'view'), 'vendor': can(req, 'purchases', 'view')}
+        return [{**x, 'outstanding': round2(x['outstanding']) if side.get(x.get('type')) else None} for x in rows]
     r.get('/contacts', perm('contacts', 'view'), list_contacts)
 
     r.get('/contacts/:id', perm('contacts', 'view'), lambda req: contact_out(req, load_contact(req.org['id'], to_int(req.params['id']))))
@@ -123,9 +130,11 @@ def routes(r):
                 o['currency'] = req.org['currency']
             cid = insert('contacts', {**o, 'org_id': req.org['id'], 'portal_token': token(18)})
             if truthy(req.body.get('opening_balance')):
+                if not can(req, 'accountant', 'edit'):
+                    raise forbidden('Opening balances post to the ledger and need accountant access')
                 _post_opening(req.org, cid, o['type'], req.body['opening_balance'], req.body.get('opening_balance_date'))
             audit(req, 'contact', cid, 'created', o['display_name'])
-            return load_contact(req.org['id'], cid)
+            return contact_out(req, load_contact(req.org['id'], cid))
         return tx(_do)
     r.post('/contacts', perm('contacts', 'create'), create)
 
@@ -136,11 +145,21 @@ def routes(r):
             o.pop('type', None)
             if 'display_name' in o and o['display_name'] is None:
                 raise bad('Display name is required')
+            # The address and reminder flag decide where invoices, reminders and share links are mailed.
+            side = 'sales' if c['type'] == 'customer' else 'purchases'
+            if (('email' in o and (o['email'] or '') != (c.get('email') or ''))
+                    or ('reminders_enabled' in o and truthy(o['reminders_enabled']) != truthy(c.get('reminders_enabled')))) and not can(req, side, 'view'):
+                raise forbidden(f'Changing where documents are emailed needs {side} access')
             update('contacts', c['id'], o)
             if 'opening_balance' in req.body:
+                amt = round2(jsnum(req.body.get('opening_balance')))
+                changed = amt != round2(jsnum(c.get('opening_balance'))) or (
+                    amt and (req.body.get('opening_balance_date') or c['opening_balance_date']) != c['opening_balance_date'])
+                if changed and not can(req, 'accountant', 'edit'):
+                    raise forbidden('Opening balances post to the ledger and need accountant access')
                 _post_opening(req.org, c['id'], c['type'], req.body['opening_balance'], req.body.get('opening_balance_date') or c['opening_balance_date'])
             audit(req, 'contact', c['id'], 'updated')
-            return load_contact(req.org['id'], c['id'])
+            return contact_out(req, load_contact(req.org['id'], c['id']))
         return tx(_do)
     r.put('/contacts/:id', perm('contacts', 'edit'), edit)
 
@@ -149,7 +168,7 @@ def routes(r):
         active = truthy(req.body.get('active'))
         update('contacts', cid, {'is_active': 1 if active else 0})
         audit(req, 'contact', cid, 'marked active' if active else 'marked inactive')
-        return load_contact(req.org['id'], cid)
+        return contact_out(req, load_contact(req.org['id'], cid))
     r.post('/contacts/:id/status', perm('contacts', 'edit'), set_status)
 
     def delete(req):
@@ -166,8 +185,6 @@ def routes(r):
     def _money_view(req):
         # Credits and open documents feed the payment and credit forms, so the view right of the contact's own side
         # (customer -> sales, vendor -> purchases) also qualifies; the other side's right does not.
-        if can(req, 'contacts', 'view'):
-            return
         c = get('SELECT type FROM contacts WHERE id = ? AND org_id = ?', to_int(req.params['id']), req.org['id'])
         if not c or not can(req, 'sales' if c['type'] == 'customer' else 'purchases', 'view'):
             raise forbidden()

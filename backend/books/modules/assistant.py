@@ -3,7 +3,7 @@ import datetime
 import re
 
 from books.core.db import all, get, insert
-from books.core.router import bad
+from books.core.router import bad, rate_limit
 from books.core.util import round2, today, token, audit
 from books.core.auth import can
 from books.core.ledger import sys_account, account_balance
@@ -90,8 +90,14 @@ def routes(r):
         # every other answer summarizes report data (balances, income, receivables, overdue invoices, stock)
         if not can(req, 'reports', 'view'):
             return reply("You don't have access to reports, so I can't answer questions about the books.")
+        rate_limit(('assistant', req.user['id']), 30, 60, 'Too many questions in a minute. Try again shortly.')
+
+        def denied(module):
+            return None if can(req, module, 'view') else reply(f"You don't have access to {module}, so I can't answer that.")
 
         if re.search(r'overdue|late', q) and re.search(r'invoice|customer|pay', q):
+            if denied('sales'):
+                return denied('sales')
             rows = all('''SELECT d.id, d.number, d.due_date, d.balance, d.total, d.status, d.doc_type, c.display_name FROM documents d JOIN contacts c ON c.id = d.contact_id
                           WHERE d.org_id = ? AND d.doc_type = 'invoice' AND d.status = 'open' AND d.balance > 0 AND d.due_date < ? ORDER BY d.due_date, d.id''', org['id'], today())
             if re.search(r'customer', q):
@@ -108,10 +114,14 @@ def routes(r):
                          table=[[x['number'], x['display_name'], f"due {x['due_date']}", _fmt(org, x['balance'])] for x in rows[:10]],
                          link={'label': 'View overdue invoices', 'url': '/invoices?status=overdue'})
         if re.search(r'receivable|owed to me|customers owe', q):
+            if denied('sales'):
+                return denied('sales')
             ar = account_balance(sys_account(org['id'], 'ar'))
             od = get("SELECT COALESCE(SUM(balance),0) s FROM documents WHERE org_id = ? AND doc_type = 'invoice' AND status = 'open' AND due_date < ?", org['id'], today())['s']
             return reply(f'Total receivables are {_fmt(org, ar)} ({_fmt(org, od)} overdue).', link={'label': 'AR aging report', 'url': '/reports/ar-aging-summary'})
         if re.search(r'payable|i owe|unpaid bill|bills due', q):
+            if denied('purchases'):
+                return denied('purchases')
             ap = -account_balance(sys_account(org['id'], 'ap'))
             rows = all('''SELECT d.number, d.due_date, d.balance, c.display_name FROM documents d JOIN contacts c ON c.id = d.contact_id
                           WHERE d.org_id = ? AND d.doc_type = 'bill' AND d.status = 'open' AND d.balance > 0 ORDER BY d.due_date, d.id LIMIT 10''', org['id'])
@@ -119,6 +129,8 @@ def routes(r):
                          table=[[x['number'], x['display_name'], f"due {x['due_date']}", _fmt(org, x['balance'])] for x in rows],
                          link={'label': 'View bills', 'url': '/bills?status=unpaid'})
         if re.search(r'cash|bank|balance', q):
+            if denied('banking'):
+                return denied('banking')
             rows = all('''SELECT a.name, COALESCE(SUM(l.debit - l.credit),0) b FROM accounts a LEFT JOIN ledger l ON l.account_id = a.id AND l.org_id = a.org_id
                           WHERE a.org_id = ? AND a.type IN ('cash','bank','credit_card') AND a.is_active = 1 GROUP BY a.id ORDER BY a.id''', org['id'])
             total = round2(sum_js(x['b'] for x in rows))
@@ -138,22 +150,29 @@ def routes(r):
             total = round2(sum_js(x['s'] for x in rows))
             return reply(f'Expenses {label} total {_fmt(org, total)}.', table=[[x['name'], _fmt(org, x['s'])] for x in rows[:8]])
         if re.search(r'top (customer|client)', q):
+            if denied('sales'):
+                return denied('sales')
             frm, to, label = _period(q if 'month' in q else f'{q} this year', org)
             rows = all('''SELECT c.display_name, SUM(d.total * d.exchange_rate) s FROM documents d JOIN contacts c ON c.id = d.contact_id
                           WHERE d.org_id = ? AND d.doc_type = 'invoice' AND d.status = 'open' AND d.date BETWEEN ? AND ? GROUP BY c.id ORDER BY s DESC, c.id LIMIT 5''',
                        org['id'], frm, to)
             return reply(f'Top customers {label}:', table=[[x['display_name'], _fmt(org, x['s'])] for x in rows])
         if re.search(r'low stock|reorder|out of stock', q):
+            if denied('items'):
+                return denied('items')
             rows = [x for x in all('SELECT i.id, i.name, i.reorder_level, (SELECT COALESCE(SUM(qty),0) FROM stock_moves s WHERE s.item_id = i.id) q FROM items i WHERE i.org_id = ? AND i.track_inventory = 1 ORDER BY i.id', org['id'])
                     if x['q'] <= (x['reorder_level'] or 0)]
             from books.core.jsutil import jsstr  # noqa: PLC0415
             return reply(f'{len(rows)} item(s) are at or below their reorder level.' if rows else 'All tracked items are above their reorder levels.',
-                         table=[[x['name'], f"on hand {jsstr(x['q'])}", f"reorder at {jsstr(x['reorder_level'])}"] for x in rows])
+                         table=[[x['name'], f"on hand {jsstr(x['q'])}", f"reorder at {jsstr(x['reorder_level'])}"] for x in rows[:10]])
         if re.search(r'draft', q):
             rows = all("SELECT doc_type, COUNT(*) n FROM documents WHERE org_id = ? AND status = 'draft' GROUP BY doc_type ORDER BY MIN(id)", org['id'])
             return reply('Draft documents:' if rows else 'You have no drafts.', table=[[x['doc_type'], x['n']] for x in rows])
         if re.search(r'unpaid|outstanding', q) and re.search(r'invoice', q):
-            rows = all("SELECT * FROM documents WHERE org_id = ? AND doc_type = 'invoice' AND status = 'open' AND balance > 0 ORDER BY date, id", org['id'])
+            if denied('sales'):
+                return denied('sales')
+            rows = all('''SELECT number, doc_type, status, balance, total, due_date, exchange_rate FROM documents
+                          WHERE org_id = ? AND doc_type = 'invoice' AND status = 'open' AND balance > 0 ORDER BY date, id''', org['id'])
             return reply(f"{len(rows)} unpaid invoice(s), {_fmt(org, sum_js(x['balance'] * x['exchange_rate'] for x in rows))} outstanding.",
                          table=[[x['number'], display_status(x), _fmt(org, x['balance'])] for x in rows[:10]],
                          link={'label': 'Unpaid invoices', 'url': '/invoices?status=unpaid'})
